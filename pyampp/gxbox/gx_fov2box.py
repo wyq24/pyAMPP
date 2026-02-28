@@ -76,6 +76,12 @@ class Fov2BoxConfig:
     euv: bool
     uv: bool
     sfq: bool
+    observer_name: str
+    fov_xc: Optional[float]
+    fov_yc: Optional[float]
+    fov_xsize: Optional[float]
+    fov_ysize: Optional[float]
+    square_fov: bool
     jump2potential: bool
     jump2bounds: bool
     jump2nlfff: bool
@@ -728,6 +734,18 @@ def _build_execute_cmd(cfg: Fov2BoxConfig) -> str:
         cmd += ["--entry-box", cfg.entry_box]
     if cfg.sfq:
         cmd.append("--sfq")
+    if cfg.observer_name:
+        cmd += ["--observer-name", cfg.observer_name]
+    if cfg.fov_xc is not None:
+        cmd += ["--fov-xc", f"{cfg.fov_xc:.2f}"]
+    if cfg.fov_yc is not None:
+        cmd += ["--fov-yc", f"{cfg.fov_yc:.2f}"]
+    if cfg.fov_xsize is not None:
+        cmd += ["--fov-xsize", f"{cfg.fov_xsize:.2f}"]
+    if cfg.fov_ysize is not None:
+        cmd += ["--fov-ysize", f"{cfg.fov_ysize:.2f}"]
+    if cfg.square_fov:
+        cmd.append("--square-fov")
     if cfg.stop_after:
         cmd += ["--stop-after", cfg.stop_after]
     if cfg.jump2potential:
@@ -747,6 +765,85 @@ def _build_execute_cmd(cfg: Fov2BoxConfig) -> str:
     if cfg.clone_only:
         cmd.append("--clone-only")
     return shlex.join(cmd)
+
+
+def _explicit_observer_fov(cfg: Fov2BoxConfig) -> Optional[dict[str, Any]]:
+    parts = [cfg.fov_xc, cfg.fov_yc, cfg.fov_xsize, cfg.fov_ysize]
+    if all(v is None for v in parts):
+        return None
+    if any(v is None for v in parts):
+        raise ValueError("Observer FOV requires all of --fov-xc/--fov-yc/--fov-xsize/--fov-ysize.")
+    return {
+        "frame": "helioprojective",
+        "xc_arcsec": float(cfg.fov_xc),
+        "yc_arcsec": float(cfg.fov_yc),
+        "xsize_arcsec": float(cfg.fov_xsize),
+        "ysize_arcsec": float(cfg.fov_ysize),
+        "square": bool(cfg.square_fov),
+    }
+
+
+def _observer_metadata_from_source_map(source_map: Optional[Map], cfg: Fov2BoxConfig) -> dict[str, Any]:
+    observer_meta: dict[str, Any] = {"name": str(cfg.observer_name or "earth")}
+    explicit_fov = _explicit_observer_fov(cfg)
+    if explicit_fov is not None:
+        observer_meta["fov"] = explicit_fov
+    ephemeris: dict[str, Any] = {}
+    if source_map is not None:
+        obs = getattr(source_map, "observer_coordinate", None)
+        if obs is not None:
+            try:
+                obs_hgs = obs.transform_to(HeliographicStonyhurst(obstime=source_map.date))
+                ephemeris["b0_deg"] = float(obs_hgs.lat.to_value(u.deg))
+            except Exception:
+                pass
+            try:
+                obs_hgc = obs.transform_to(HeliographicCarrington(observer="earth", obstime=source_map.date))
+                ephemeris["l0_deg"] = float(obs_hgc.lon.to_value(u.deg))
+            except Exception:
+                pass
+        if hasattr(source_map, "rsun_meters") and source_map.rsun_meters is not None:
+            ephemeris["rsun_cm"] = float(u.Quantity(source_map.rsun_meters).to_value(u.cm))
+        if hasattr(source_map, "dsun") and source_map.dsun is not None:
+            ephemeris["dsun_cm"] = float(u.Quantity(source_map.dsun).to_value(u.cm))
+    if ephemeris:
+        observer_meta["ephemeris"] = ephemeris
+    return observer_meta
+
+
+def _observer_metadata_from_entry(entry_loaded: Optional[Dict[str, Any]], cfg: Fov2BoxConfig) -> Optional[dict[str, Any]]:
+    if not isinstance(entry_loaded, dict):
+        return None
+    base_observer = entry_loaded.get("observer", {})
+    observer_meta: dict[str, Any] = dict(base_observer) if isinstance(base_observer, dict) else {}
+    observer_meta["name"] = str(cfg.observer_name or observer_meta.get("name") or "earth")
+    explicit_fov = _explicit_observer_fov(cfg)
+    if explicit_fov is not None:
+        observer_meta["fov"] = explicit_fov
+    ephemeris = dict(observer_meta.get("ephemeris", {})) if isinstance(observer_meta.get("ephemeris"), dict) else {}
+    if not ephemeris:
+        index_text = None
+        base_group = entry_loaded.get("base")
+        if isinstance(base_group, dict):
+            index_text = base_group.get("index")
+        if index_text:
+            try:
+                header = fits.Header.fromstring(_decode_id_text(index_text), sep="\n")
+                if "SOLAR_B0" in header:
+                    ephemeris["b0_deg"] = float(header["SOLAR_B0"])
+                if "CRLN_OBS" in header:
+                    ephemeris["l0_deg"] = float(header["CRLN_OBS"])
+                elif "HGLN_OBS" in header:
+                    ephemeris["l0_deg"] = float(header["HGLN_OBS"])
+                if "RSUN_REF" in header:
+                    ephemeris["rsun_cm"] = float(u.Quantity(header["RSUN_REF"], u.m).to_value(u.cm))
+                if "DSUN_OBS" in header:
+                    ephemeris["dsun_cm"] = float(u.Quantity(header["DSUN_OBS"], u.m).to_value(u.cm))
+            except Exception:
+                pass
+    if ephemeris:
+        observer_meta["ephemeris"] = ephemeris
+    return observer_meta or None
 
 
 def _build_index_header(bottom_wcs_header, source_map: Map) -> str:
@@ -1074,7 +1171,8 @@ def _normalize_stage_for_h5(stage_box: dict) -> dict:
 def _h5_corona_to_internal_xyz(corona: dict, axis_order_3d: Optional[str]) -> dict:
     if not isinstance(corona, dict):
         return corona
-    if axis_order_3d != "zyx":
+    axis_order = _decode_id_text(axis_order_3d).lower()
+    if axis_order != "zyx":
         return corona
     out = dict(corona)
     for k in ("bx", "by", "bz"):
@@ -1218,7 +1316,7 @@ def _resolve_box_params(cfg: Fov2BoxConfig) -> Tuple[Time, Tuple[int, int, int],
             if corona is not None:
                 if box_dims is None and "bx" in corona:
                     shape = np.asarray(corona["bx"]).shape
-                    axis_order = box_b3d.get("metadata", {}).get("axis_order_3d")
+                    axis_order = _decode_id_text(box_b3d.get("metadata", {}).get("axis_order_3d")).lower()
                     if axis_order == "zyx" and len(shape) == 3:
                         box_dims = (int(shape[2]), int(shape[1]), int(shape[0]))
                     else:
@@ -1280,6 +1378,12 @@ def main(
     euv: bool = typer.Option(False, "--euv", help="Download AIA EUV maps"),
     uv: bool = typer.Option(False, "--uv", help="Download AIA UV maps"),
     sfq: bool = typer.Option(False, "--sfq", help="Use SFQ disambiguation (method=0)"),
+    observer_name: str = typer.Option("earth", "--observer-name", help="Observer identifier stored in output metadata"),
+    fov_xc: Optional[float] = typer.Option(None, "--fov-xc", help="Observer/image FOV center X in arcsec"),
+    fov_yc: Optional[float] = typer.Option(None, "--fov-yc", help="Observer/image FOV center Y in arcsec"),
+    fov_xsize: Optional[float] = typer.Option(None, "--fov-xsize", help="Observer/image FOV width in arcsec"),
+    fov_ysize: Optional[float] = typer.Option(None, "--fov-ysize", help="Observer/image FOV height in arcsec"),
+    square_fov: bool = typer.Option(False, "--square-fov", help="Observer/image FOV is constrained square"),
     jump2potential: bool = typer.Option(False, "--jump2potential", help="Jump to POT"),
     jump2bounds: bool = typer.Option(False, "--jump2bounds", help="Jump to BND"),
     jump2nlfff: bool = typer.Option(False, "--jump2nlfff", help="Jump to NAS"),
@@ -1322,6 +1426,12 @@ def main(
         euv=euv,
         uv=uv,
         sfq=sfq,
+        observer_name=observer_name,
+        fov_xc=fov_xc,
+        fov_yc=fov_yc,
+        fov_xsize=fov_xsize,
+        fov_ysize=fov_ysize,
+        square_fov=square_fov,
         jump2potential=jump2potential,
         jump2bounds=jump2bounds,
         jump2nlfff=jump2nlfff,
@@ -1339,6 +1449,9 @@ def main(
         raise ValueError("Select only one projection: --cea or --top")
     if not cfg.cea and not cfg.top:
         cfg.cea = True
+    if cfg.square_fov and cfg.fov_xsize is not None:
+        cfg.fov_ysize = cfg.fov_xsize
+    _explicit_observer_fov(cfg)
 
     legacy_stop_flags = [
         ("none", cfg.empty_box_only, "--empty-box-only"),
@@ -1430,6 +1543,8 @@ def main(
                 "Allowed: backward jumps, forward by one stage, NONE->BND (implicit POT), POT->NAS (implicit BND), and POT->GEN."
             )
 
+    observer_metadata = _observer_metadata_from_entry(entry_loaded, cfg) if entry_loaded is not None else None
+
     if cfg.clone_only:
         assert entry_loaded is not None
         assert entry_stage is not None
@@ -1462,6 +1577,8 @@ def main(
         meta.setdefault("id", out_path.stem)
         meta["clone_only"] = "true"
         clone_box["metadata"] = meta
+        if observer_metadata is not None:
+            clone_box["observer"] = observer_metadata
         clone_box = _normalize_stage_for_h5(clone_box)
         write_b3d_h5(str(out_path), clone_box)
         print("\nCompleted gx-fov2box clone-only. Output file:")
@@ -1660,6 +1777,7 @@ def main(
             box_origin.transform_to(HeliographicCarrington(obstime=obs_time)).lat.to_value(u.deg),
         )
         base = _stage_file_base(obs_time, coord_tag, projection_tag=projection_tag)
+        observer_metadata = _observer_metadata_from_source_map(maps["field"], cfg)
 
     empty_grid = np.zeros((box_dims_resolved[0], box_dims_resolved[1], box_dims_resolved[2]), dtype=float)
     default_grid = {"dx": float(dr3[0]), "dy": float(dr3[1]), "dz": np.array([float(dr3[2])], dtype=float)}
@@ -1744,6 +1862,8 @@ def main(
         if vert_current_error:
             metadata["vert_current_error"] = vert_current_error
         stage_box["metadata"] = metadata
+        if observer_metadata is not None:
+            stage_box["observer"] = dict(observer_metadata)
         stage_box = _normalize_stage_for_h5(stage_box)
         out_path = _stage_filename(out_dir, base, stage_tag)
         write_b3d_h5(str(out_path), stage_box)

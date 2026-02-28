@@ -22,6 +22,15 @@ from pyampp.gxbox.gx_fov2box import (
     _entry_stage_from_loaded,
     _extract_execute_paths,
 )
+from pyampp.gxbox.fov_selector_gui import run_fov_box_selector
+from pyampp.gxbox.selector_api import (
+    BoxGeometrySelection,
+    CoordMode,
+    DisplayFovSelection,
+    SelectorDialogResult,
+    SelectorSessionInput,
+)
+from pyampp.data.downloader import SDOImageDownloader
 from pyampp.util.idl_execute_to_gxfov2box import _parse_idl_call, _build_gx_fov2box_command
 from astropy.coordinates import SkyCoord
 import astropy.units as u
@@ -116,7 +125,16 @@ class PyAmppGUI(QMainWindow):
         """
         super().__init__()
         self._gxbox_proc = None
+        self._view2d_proc = None
+        self._view2d_target_path = None
+        self._view2d_adopt_on_close = False
+        self._view2d_launch_pending = False
         self._proc_partial_line = ""
+        self._proc_command = None
+        self._pending_stop_after = None
+        self._selector_fov: DisplayFovSelection | None = None
+        self._selector_square_fov = False
+        self._selector_observer_name = "earth"
         self.info_only_box = None
         self._last_model_path = None
         self._last_valid_entry_box = ""
@@ -126,6 +144,9 @@ class PyAmppGUI(QMainWindow):
         self._proc_timer = QTimer(self)
         self._proc_timer.setInterval(500)
         self._proc_timer.timeout.connect(self._check_gxbox_process)
+        self._view2d_timer = QTimer(self)
+        self._view2d_timer.setInterval(500)
+        self._view2d_timer.timeout.connect(self._check_view2d_process)
         self._settings = QSettings("SUNCAST", "pyAMPP")
         self.model_time_orig = None
         # self.rotate_to_time_button = None
@@ -133,6 +154,21 @@ class PyAmppGUI(QMainWindow):
         self.coords_center = None
         self.coords_center_orig = None
         self.initUI()
+
+    @staticmethod
+    def _default_test_model_state():
+        return {
+            "time_iso": "2025-11-26T15:34:31",
+            "coord_mode": "hpc",
+            "coord_x": "-280.0",
+            "coord_y": "-250.0",
+            "projection": "cea",
+            "grid_x": "150",
+            "grid_y": "75",
+            "grid_z": "150",
+            "dx_km": "1400.000",
+            "pad_percent": "10",
+        }
 
     def _has_entry_box(self) -> bool:
         return bool(self.external_box_edit.text().strip())
@@ -184,11 +220,188 @@ class PyAmppGUI(QMainWindow):
         self.add_cmd_display()
         self.add_cmd_buttons()
         self.add_status_log()
+        self._restore_or_apply_default_session_state()
         self.update_coords_center()
 
         self._sync_pipeline_options()
         self.update_command_display()
         self.show()
+
+    def _restore_or_apply_default_session_state(self):
+        """
+        Restore last-used GUI state from QSettings if present.
+        Otherwise, initialize a known-good test configuration.
+        """
+        try:
+            has_saved = bool(self._settings.value("session/model_time_iso", "", type=str).strip())
+            if has_saved:
+                self._restore_session_state_from_settings()
+            else:
+                self._apply_default_test_model_state()
+        except Exception as exc:
+            # Fall back to deterministic defaults if restore fails.
+            self.status_log_edit.append(f"Settings restore warning: {exc}")
+            self._apply_default_test_model_state()
+
+    def _apply_default_test_model_state(self):
+        cfg = self._default_test_model_state()
+        dt = datetime.strptime(cfg["time_iso"], "%Y-%m-%dT%H:%M:%S")
+        self.model_time_edit.setDateTime(QDateTime(dt))
+        self.coord_x_edit.setText(cfg["coord_x"])
+        self.coord_y_edit.setText(cfg["coord_y"])
+        self.grid_x_edit.setText(cfg["grid_x"])
+        self.grid_y_edit.setText(cfg["grid_y"])
+        self.grid_z_edit.setText(cfg["grid_z"])
+        self.res_edit.setText(cfg["dx_km"])
+        self.padding_size_edit.setText(cfg["pad_percent"])
+        self.hpc_radio_button.setChecked(cfg["coord_mode"] == "hpc")
+        self.hgc_radio_button.setChecked(cfg["coord_mode"] == "hgc")
+        self.hgs_radio_button.setChecked(cfg["coord_mode"] == "hgs")
+        self.proj_cea_radio.setChecked(cfg["projection"] == "cea")
+        self.proj_top_radio.setChecked(cfg["projection"] == "top")
+
+    def _restore_session_state_from_settings(self):
+        # Core geometry / coordinate state
+        time_iso = self._settings.value("session/model_time_iso", "", type=str)
+        if time_iso:
+            try:
+                dt = datetime.strptime(time_iso, "%Y-%m-%dT%H:%M:%S")
+                self.model_time_edit.setDateTime(QDateTime(dt))
+            except Exception:
+                pass
+
+        self.coord_x_edit.setText(self._settings.value("session/coord_x", self.coord_x_edit.text(), type=str))
+        self.coord_y_edit.setText(self._settings.value("session/coord_y", self.coord_y_edit.text(), type=str))
+        self.grid_x_edit.setText(self._settings.value("session/grid_x", self.grid_x_edit.text(), type=str))
+        self.grid_y_edit.setText(self._settings.value("session/grid_y", self.grid_y_edit.text(), type=str))
+        self.grid_z_edit.setText(self._settings.value("session/grid_z", self.grid_z_edit.text(), type=str))
+        self.res_edit.setText(self._settings.value("session/dx_km", self.res_edit.text(), type=str))
+        self.padding_size_edit.setText(self._settings.value("session/pad_percent", self.padding_size_edit.text(), type=str))
+
+        coord_mode = self._settings.value("session/coord_mode", "hpc", type=str).lower()
+        self.hpc_radio_button.setChecked(coord_mode == "hpc")
+        self.hgc_radio_button.setChecked(coord_mode == "hgc")
+        self.hgs_radio_button.setChecked(coord_mode == "hgs")
+
+        projection = self._settings.value("session/projection", "cea", type=str).lower()
+        self.proj_cea_radio.setChecked(projection == "cea")
+        self.proj_top_radio.setChecked(projection == "top")
+
+        # Entry mode
+        self._set_jump_action(self._settings.value("session/entry_mode", "continue", type=str))
+
+        # Workflow toggles (best effort; names map to widget attrs)
+        bool_widgets = {
+            "download_aia_uv": self.download_aia_uv,
+            "download_aia_euv": self.download_aia_euv,
+            "stop_early": self.stop_early_box,
+            "save_empty": self.save_empty_box,
+            "save_potential": self.save_potential_box,
+            "save_bounds": self.save_bounds_box,
+            "save_nas": self.save_nas_box,
+            "save_gen": self.save_gen_box,
+            "stop_none": self.empty_box_only_box,
+            "stop_pot": self.stop_after_potential_box,
+            "stop_nas": self.nlfff_only_box,
+            "stop_gen": self.generic_only_box,
+            "skip_nlfff": self.skip_nlfff_extrapolation,
+            "skip_lines": self.skip_line_computation_box,
+            "center_vox": self.center_vox_box,
+            "save_chromo": self.add_save_chromo_box,
+            "disambig_sfq": self.disambig_sfq_radio,
+        }
+        for key, widget in bool_widgets.items():
+            try:
+                value = self._settings.value(f"session/{key}", widget.isChecked(), type=bool)
+                widget.setChecked(bool(value))
+            except Exception:
+                pass
+
+        # Optional persisted entry box path (kept separate from data/model dir persistence)
+        entry_box = self._settings.value("session/entry_box_path", "", type=str).strip()
+        if entry_box:
+            self.external_box_edit.setText(entry_box)
+
+    def _save_session_state_to_settings(self):
+        try:
+            dt = self.model_time_edit.dateTime().toPyDateTime()
+            self._settings.setValue("session/model_time_iso", dt.strftime("%Y-%m-%dT%H:%M:%S"))
+            self._settings.setValue("session/coord_x", self.coord_x_edit.text().strip())
+            self._settings.setValue("session/coord_y", self.coord_y_edit.text().strip())
+            self._settings.setValue("session/grid_x", self.grid_x_edit.text().strip())
+            self._settings.setValue("session/grid_y", self.grid_y_edit.text().strip())
+            self._settings.setValue("session/grid_z", self.grid_z_edit.text().strip())
+            self._settings.setValue("session/dx_km", self.res_edit.text().strip())
+            self._settings.setValue("session/pad_percent", self.padding_size_edit.text().strip())
+            self._settings.setValue("session/coord_mode", self._current_coord_mode().value)
+            self._settings.setValue("session/projection", "cea" if self.proj_cea_radio.isChecked() else "top")
+            self._settings.setValue("session/entry_mode", self._get_jump_action())
+            self._settings.setValue("session/entry_box_path", self.external_box_edit.text().strip())
+
+            bool_widgets = {
+                "download_aia_uv": self.download_aia_uv,
+                "download_aia_euv": self.download_aia_euv,
+                "stop_early": self.stop_early_box,
+                "save_empty": self.save_empty_box,
+                "save_potential": self.save_potential_box,
+                "save_bounds": self.save_bounds_box,
+                "save_nas": self.save_nas_box,
+                "save_gen": self.save_gen_box,
+                "stop_none": self.empty_box_only_box,
+                "stop_pot": self.stop_after_potential_box,
+                "stop_nas": self.nlfff_only_box,
+                "stop_gen": self.generic_only_box,
+                "skip_nlfff": self.skip_nlfff_extrapolation,
+                "skip_lines": self.skip_line_computation_box,
+                "center_vox": self.center_vox_box,
+                "save_chromo": self.add_save_chromo_box,
+                "disambig_sfq": self.disambig_sfq_radio,
+            }
+            for key, widget in bool_widgets.items():
+                self._settings.setValue(f"session/{key}", bool(widget.isChecked()))
+            self._settings.sync()
+        except Exception:
+            # Settings persistence should never break GUI actions.
+            pass
+
+    def _refresh_after_session_state_apply(self):
+        try:
+            self.update_coords_center()
+        except Exception:
+            pass
+        self._sync_pipeline_options()
+        self.update_command_display()
+
+    def on_reset_to_test_defaults_clicked(self):
+        self._apply_default_test_model_state()
+        self._refresh_after_session_state_apply()
+        self.status_log_edit.append("Reset GUI fields to test-model defaults.")
+
+    def on_restore_last_saved_clicked(self):
+        if not bool(self._settings.value("session/model_time_iso", "", type=str).strip()):
+            self.status_log_edit.append("No saved GUI session found; applying test-model defaults.")
+            self._apply_default_test_model_state()
+        else:
+            self._restore_session_state_from_settings()
+            self.status_log_edit.append("Restored last saved GUI session.")
+        self._refresh_after_session_state_apply()
+
+    def on_open_fov_selector_clicked(self):
+        if self._last_model_path:
+            model_path = Path(self._last_model_path).expanduser()
+            if model_path.exists():
+                self._launch_box_view2d(model_path)
+                return
+        if self._has_entry_box():
+            entry_path = Path(self.external_box_edit.text().strip()).expanduser()
+            if entry_path.exists() and entry_path.suffix.lower() == ".h5":
+                self._launch_box_view2d(entry_path)
+                return
+        self._launch_download_fov_selector_placeholder()
+
+    def closeEvent(self, event):
+        self._save_session_state_to_settings()
+        super().closeEvent(event)
 
     def add_data_repository_section(self):
         layout = self.data_repository_section.layout()
@@ -760,6 +973,19 @@ class PyAmppGUI(QMainWindow):
         proj_disambig_row.addWidget(self.disambig_group)
         self.verticalLayout_2.addLayout(proj_disambig_row)
 
+        # Session-state convenience actions for iterative interactive work.
+        session_buttons_row = QHBoxLayout()
+        self.reset_test_defaults_button = QPushButton("Reset to Test Defaults")
+        self.restore_last_saved_button = QPushButton("Restore Last Saved")
+        self.reset_test_defaults_button.setToolTip("Reset GUI geometry/time/projection fields to the built-in test configuration.")
+        self.restore_last_saved_button.setToolTip("Restore the last saved GUI session from local settings.")
+        self.reset_test_defaults_button.clicked.connect(self.on_reset_to_test_defaults_clicked)
+        self.restore_last_saved_button.clicked.connect(self.on_restore_last_saved_clicked)
+        session_buttons_row.addWidget(self.reset_test_defaults_button)
+        session_buttons_row.addWidget(self.restore_last_saved_button)
+        session_buttons_row.addStretch()
+        self.verticalLayout_2.addLayout(session_buttons_row)
+
     def _get_jump_action(self):
         if self.modify_radio.isChecked():
             return "modify"
@@ -819,7 +1045,7 @@ class PyAmppGUI(QMainWindow):
         self.download_hmi_box = QCheckBox("Download HMI Vector Magnetograms")
         self.download_hmi_box.setChecked(True)
         self.download_hmi_box.setEnabled(False)
-        self.stop_early_box = QCheckBox("Stop")
+        self.stop_early_box = QCheckBox("Stop after data download")
         self.download_aia_euv.setChecked(True)
         self.download_aia_uv.setChecked(True)
         self.save_empty_box.setChecked(False)
@@ -1028,6 +1254,21 @@ class PyAmppGUI(QMainWindow):
                     enabled = True
                 self._set_checkbox_state(box, enabled)
 
+            # Continue mode from GEN/CHR defaults to a direct CHR completion path.
+            # Until the user explicitly selects "Stop after GEN", GEN-only controls
+            # should stay off because the generated command will jump straight to CHR.
+            continue_direct_chr = (
+                has_entry
+                and not modify_mode
+                and mode == "continue"
+                and (self._entry_stage_detected or "NONE") in ("GEN", "CHR")
+                and stop_stage is None
+            )
+            if continue_direct_chr:
+                self._set_checkbox_state(self.save_gen_box, False)
+                self._set_checkbox_state(self.skip_line_computation_box, False)
+                self._set_checkbox_state(self.center_vox_box, False)
+
             # When a stop is selected, corresponding save is automatic.
             if stop_stage is not None:
                 for _stop_box, stage, save_box in stop_stage_boxes:
@@ -1077,14 +1318,22 @@ class PyAmppGUI(QMainWindow):
         if self.cmd_button_layout is not None:
             spacer_idx = max(0, self.cmd_button_layout.count() - 1)
             self.cmd_button_layout.insertWidget(spacer_idx, self.info_only_box)
+        self.open_fov_selector_button = QPushButton("gxbox-view2d")
+        self.open_fov_selector_button.setToolTip(
+            "Open gxbox-view2d on demand (2D map/FOV viewer using current GUI fields and local cached maps if available)."
+        )
+        self.open_fov_selector_button.clicked.connect(self.on_open_fov_selector_clicked)
+        if self.cmd_button_layout is not None:
+            spacer_idx = max(0, self.cmd_button_layout.count() - 1)
+            self.cmd_button_layout.insertWidget(spacer_idx, self.open_fov_selector_button)
         self.execute_button.clicked.connect(self.execute_command)
         self.stop_button.clicked.connect(self.stop_command)
         self.stop_button.setEnabled(False)
         self.save_button.setVisible(False)
         self.save_button.setEnabled(False)
         self.save_button.clicked.connect(self.save_command)
-        self.send_to_viewer_button = QPushButton("Send to gxbox-view")
-        self.send_to_viewer_button.setToolTip("Open latest generated model in gxbox-view")
+        self.send_to_viewer_button = QPushButton("gxbox-view3d")
+        self.send_to_viewer_button.setToolTip("Open the latest generated model in gxbox-view3d")
         self.send_to_viewer_button.setEnabled(False)
         if self.cmd_button_layout is not None:
             spacer_idx = max(0, self.cmd_button_layout.count() - 1)
@@ -1252,6 +1501,53 @@ class PyAmppGUI(QMainWindow):
         except Exception as exc:
             self.status_log_edit.append(f"GUI update error: {exc}")
 
+    def apply_geometry_selection(self, selection: BoxGeometrySelection) -> None:
+        """
+        Apply an accepted geometry selection (e.g., from a future standalone FOV selector)
+        to the existing pyAMPP GUI input fields.
+        """
+        # Set coordinate mode first without firing conversion handlers.
+        target_frame = str(selection.coord_mode)
+        for rb in (self.hpc_radio_button, self.hgc_radio_button, self.hgs_radio_button):
+            rb.blockSignals(True)
+        self.hpc_radio_button.setChecked(target_frame == CoordMode.HPC.value)
+        self.hgc_radio_button.setChecked(target_frame == CoordMode.HGC.value)
+        self.hgs_radio_button.setChecked(target_frame == CoordMode.HGS.value)
+        for rb in (self.hpc_radio_button, self.hgc_radio_button, self.hgs_radio_button):
+            rb.blockSignals(False)
+
+        # Apply field values in the same format used by the GUI widgets.
+        field_values = selection.as_gui_text_fields()
+        self.coord_x_edit.setText(field_values["coord_x_edit"])
+        self.coord_y_edit.setText(field_values["coord_y_edit"])
+        self.grid_x_edit.setText(field_values["grid_x_edit"])
+        self.grid_y_edit.setText(field_values["grid_y_edit"])
+        self.grid_z_edit.setText(field_values["grid_z_edit"])
+        self.res_edit.setText(field_values["res_edit"])
+
+        # Refresh labels/tooltips for the selected coordinate mode and recompute internal center.
+        self.update_coords_center()
+        if selection.coord_mode == CoordMode.HPC:
+            self.update_hpc_state(True)
+        elif selection.coord_mode == CoordMode.HGC:
+            self.update_hgc_state(True)
+        else:
+            self.update_hgs_state(True)
+
+        # Keep pipeline/UI state synchronized with the new geometry values.
+        self._sync_pipeline_options()
+        self.update_command_display()
+        self.status_log_edit.append("Applied geometry selection from selector API.")
+
+    def apply_selector_result(self, result: SelectorDialogResult) -> None:
+        """Apply a full selector dialog result to GUI-visible and hidden state."""
+        self.apply_geometry_selection(result.geometry)
+        self._selector_fov = result.fov
+        self._selector_square_fov = bool(result.square_fov)
+        self.update_command_display()
+        if result.fov is not None:
+            self.status_log_edit.append("Stored observer FOV metadata from selector API.")
+
     def update_hpc_state(self, checked, coords_center=None):
         """
         Updates the UI when Helioprojective coordinates are selected.
@@ -1343,6 +1639,89 @@ class PyAmppGUI(QMainWindow):
                                      frame='heliographic_stonyhurst')
         return coords_center
 
+    def _current_coord_mode(self) -> CoordMode:
+        if self.hpc_radio_button.isChecked():
+            return CoordMode.HPC
+        if self.hgc_radio_button.isChecked():
+            return CoordMode.HGC
+        return CoordMode.HGS
+
+    def _current_geometry_selection(self) -> BoxGeometrySelection:
+        return BoxGeometrySelection(
+            coord_mode=self._current_coord_mode(),
+            coord_x=float(self.coord_x_edit.text()),
+            coord_y=float(self.coord_y_edit.text()),
+            grid_x=int(float(self.grid_x_edit.text())),
+            grid_y=int(float(self.grid_y_edit.text())),
+            grid_z=int(float(self.grid_z_edit.text())),
+            dx_km=float(self.res_edit.text()),
+        )
+
+    def _selector_map_ids_from_gui(self) -> tuple[str, ...]:
+        # Display names are intentionally user-facing here.
+        map_ids = ["Bz", "Ic", "Br", "Bp", "Bt"]
+        if self.download_aia_uv.isChecked():
+            map_ids.append("1600")
+        if self.download_aia_euv.isChecked():
+            map_ids.extend(["171", "193", "211", "304", "335"])
+        # Deduplicate while preserving order.
+        out = []
+        seen = set()
+        for m in map_ids:
+            if m not in seen:
+                seen.add(m)
+                out.append(m)
+        return tuple(out)
+
+    def _build_download_selector_session_input(self) -> SelectorSessionInput:
+        time_iso = Time(self.model_time_edit.dateTime().toPyDateTime()).to_datetime().strftime('%Y-%m-%dT%H:%M:%S')
+        try:
+            pad_frac = float(self.padding_size_edit.text()) / 100.0
+        except Exception:
+            pad_frac = None
+        map_files = {}
+        try:
+            dl = SDOImageDownloader(
+                Time(self.model_time_edit.dateTime().toPyDateTime()),
+                data_dir=self.sdo_data_edit.text(),
+                euv=self.download_aia_euv.isChecked(),
+                uv=self.download_aia_uv.isChecked(),
+                hmi=True,
+            )
+            # Local file discovery only; do not trigger network fetch here.
+            map_files = dl._check_files_exist(dl.path, returnfilelist=True)
+        except Exception as exc:
+            self.status_log_edit.append(f"Selector map-file discovery warning: {exc}")
+        requested_map_ids = self._selector_map_ids_from_gui()
+        map_ids = []
+        availability = {
+            "Bz": "magnetogram" in map_files,
+            "Ic": "continuum" in map_files,
+            "Br": all(k in map_files for k in ("field", "inclination", "azimuth", "disambig")),
+            "Bp": all(k in map_files for k in ("field", "inclination", "azimuth", "disambig")),
+            "Bt": all(k in map_files for k in ("field", "inclination", "azimuth", "disambig")),
+        }
+        for map_id in requested_map_ids:
+            if map_id in availability:
+                if availability[map_id]:
+                    map_ids.append(map_id)
+                continue
+            if map_id in map_files:
+                map_ids.append(map_id)
+        if not map_ids:
+            map_ids = list(requested_map_ids)
+        return SelectorSessionInput(
+            time_iso=time_iso,
+            data_dir=self.sdo_data_edit.text(),
+            geometry=self._current_geometry_selection(),
+            fov=self._selector_fov,
+            square_fov=bool(self._selector_square_fov),
+            map_ids=map_ids,
+            map_files=map_files,
+            initial_map_id="171" if "171" in map_ids else ("Bz" if "Bz" in map_ids else (map_ids[0] if map_ids else None)),
+            pad_frac=pad_frac,
+        )
+
     def get_command(self):
         """
         Constructs the command based on the current UI settings.
@@ -1358,6 +1737,7 @@ class PyAmppGUI(QMainWindow):
         command = ['gx-fov2box']
         has_entry = self._has_entry_box()
         jump_action = self._get_jump_action()
+        final_stage = "chr"
 
         # Entry-based modes keep CLI minimal; modify mode builds a fresh script from GUI fields.
         if has_entry and jump_action != "modify":
@@ -1400,17 +1780,20 @@ class PyAmppGUI(QMainWindow):
             command += ['--save-nas']
         if self.save_gen_box.isChecked():
             command += ['--save-gen']
+        if self.add_save_chromo_box.isChecked():
+            command += ['--save-chr']
 
         if self.stop_early_box.isChecked():
-            command += ['--stop-after', 'dl']
+            final_stage = "dl"
         elif self.empty_box_only_box.isChecked():
-            command += ['--stop-after', 'none']
+            final_stage = "none"
         elif self.stop_after_potential_box.isChecked():
-            command += ['--stop-after', 'pot']
+            final_stage = "pot"
         elif self.nlfff_only_box.isChecked():
-            command += ['--stop-after', 'nas']
+            final_stage = "nas"
         elif self.generic_only_box.isChecked() or not self.add_save_chromo_box.isChecked():
-            command += ['--stop-after', 'gen']
+            final_stage = "gen"
+        command += ['--stop-after', final_stage]
 
         if self.skip_nlfff_extrapolation.isChecked():
             command += ['--use-potential']
@@ -1423,6 +1806,13 @@ class PyAmppGUI(QMainWindow):
             command += ['--rebuild']
         elif jump_action == 'rebuild_none':
             command += ['--rebuild-from-none']
+        elif (
+            has_entry
+            and jump_action == "continue"
+            and final_stage == "chr"
+            and (self._entry_stage_detected or "").upper() in ("GEN", "CHR")
+        ):
+            command += ['--jump2chromo']
 
         # Disambiguation affects fresh scripts (new or modify mode) only.
         if ((not has_entry) or jump_action == "modify") and self.disambig_sfq_radio.isChecked():
@@ -1430,6 +1820,15 @@ class PyAmppGUI(QMainWindow):
 
         if self.info_only_box is not None and self.info_only_box.isChecked():
             command += ['--info']
+
+        if self._selector_fov is not None:
+            command += ['--observer-name', self._selector_observer_name]
+            command += ['--fov-xc', f'{self._selector_fov.center_x_arcsec:.2f}']
+            command += ['--fov-yc', f'{self._selector_fov.center_y_arcsec:.2f}']
+            command += ['--fov-xsize', f'{self._selector_fov.width_arcsec:.2f}']
+            command += ['--fov-ysize', f'{self._selector_fov.height_arcsec:.2f}']
+            if self._selector_square_fov:
+                command += ['--square-fov']
 
         return command
 
@@ -1441,7 +1840,10 @@ class PyAmppGUI(QMainWindow):
             QMessageBox.warning(self, "GXbox Running", "A GXbox process is already running.")
             return
 
+        self._save_session_state_to_settings()
         command = self.get_command()
+        self._proc_command = list(command)
+        self._pending_stop_after = self._command_stop_after(command)
         self._last_model_path = None
         self.send_to_viewer_button.setEnabled(False)
         try:
@@ -1461,8 +1863,41 @@ class PyAmppGUI(QMainWindow):
             self.status_log_edit.append("Command started: " + " ".join(command))
             self._proc_timer.start()
         except Exception as e:
+            self._proc_command = None
+            self._pending_stop_after = None
             QMessageBox.critical(self, "Execution Error", f"Failed to start command: {e}")
             self.status_log_edit.append("Command failed to start")
+
+    @staticmethod
+    def _command_stop_after(command) -> str | None:
+        try:
+            for i, token in enumerate(command[:-1]):
+                if token == "--stop-after":
+                    return str(command[i + 1])
+        except Exception:
+            return None
+        return None
+
+    def _launch_download_fov_selector_placeholder(self):
+        """
+        Post-download hook for the standalone FOV/box selector GUI.
+
+        The visualization backend is still scaffold-level, but the launch/apply
+        contract is fully wired:
+        - build session input from current pyAMPP GUI fields
+        - open selector dialog
+        - apply accepted geometry back to the pyAMPP GUI
+        """
+        try:
+            session_input = self._build_download_selector_session_input()
+            result = run_fov_box_selector(session_input=session_input, parent=self)
+            if result is None:
+                self.status_log_edit.append("FOV/box selector cancelled.")
+                return
+            self.apply_selector_result(result)
+            self.status_log_edit.append("FOV/box selector accepted.")
+        except Exception as exc:
+            self.status_log_edit.append(f"FOV/box selector error: {exc}")
 
     def _drain_process_output(self):
         if self._gxbox_proc is None or self._gxbox_proc.stdout is None:
@@ -1514,6 +1949,8 @@ class PyAmppGUI(QMainWindow):
             self.status_log_edit.append("Command killed")
         finally:
             self._gxbox_proc = None
+            self._proc_command = None
+            self._pending_stop_after = None
             self.stop_button.setEnabled(False)
             self.execute_button.setEnabled(True)
             self._proc_timer.stop()
@@ -1536,6 +1973,10 @@ class PyAmppGUI(QMainWindow):
             if exit_code == 0:
                 self.status_log_edit.append("Command finished successfully")
                 self._update_last_model_path()
+                if self._pending_stop_after == "dl":
+                    self._launch_download_fov_selector_placeholder()
+                elif self._pending_stop_after is not None:
+                    self._launch_stop_stage_box_view2d()
             else:
                 self.status_log_edit.append(f"Command exited with code {exit_code}")
         except Exception as exc:
@@ -1543,6 +1984,8 @@ class PyAmppGUI(QMainWindow):
         finally:
             if self._gxbox_proc is not None and self._gxbox_proc.poll() is not None:
                 self._gxbox_proc = None
+                self._proc_command = None
+                self._pending_stop_after = None
                 self.stop_button.setEnabled(False)
                 self.execute_button.setEnabled(True)
                 self._proc_timer.stop()
@@ -1637,16 +2080,115 @@ class PyAmppGUI(QMainWindow):
         try:
             start_dir = model_path.parent
             subprocess.Popen([
-                "gxbox-view",
+                "gxbox-view3d",
                 "--pick",
                 "--dir",
                 str(start_dir),
                 "--h5",
                 str(model_path),
             ])
-            self.status_log_edit.append(f"Launched gxbox-view with: {model_path}")
+            self.status_log_edit.append(f"Launched gxbox-view3d with: {model_path}")
         except Exception as exc:
-            QMessageBox.critical(self, "Launch Failed", f"Could not launch gxbox-view:\n{exc}")
+            QMessageBox.critical(self, "Launch Failed", f"Could not launch gxbox-view3d:\n{exc}")
+
+    def _adopt_entry_box_for_continue(self, model_path: Path) -> None:
+        path_text = str(model_path.expanduser())
+        self.external_box_edit.blockSignals(True)
+        self.external_box_edit.setText(path_text)
+        self.external_box_edit.blockSignals(False)
+        try:
+            self.update_external_box_dir()
+            self._set_jump_action("continue")
+            self._sync_pipeline_options()
+            self.update_command_display()
+            self.status_log_edit.append(f"Adopted stop-stage box for continue: {path_text}")
+        except Exception as exc:
+            self.status_log_edit.append(f"Could not adopt stop-stage box for continue: {exc}")
+
+    def _check_view2d_process(self):
+        try:
+            if self._view2d_proc is None:
+                self._view2d_timer.stop()
+                return
+            if self._view2d_proc.poll() is None:
+                if self._view2d_launch_pending:
+                    self._view2d_launch_pending = False
+                    if self._view2d_target_path:
+                        self.status_log_edit.append(f"Launched gxbox-view2d with: {self._view2d_target_path}")
+                return
+            exit_code = self._view2d_proc.returncode
+            startup_output = self._consume_view2d_output(self._view2d_proc)
+            target_path = self._view2d_target_path
+            adopt_on_close = bool(self._view2d_adopt_on_close)
+            launch_pending = bool(self._view2d_launch_pending)
+            self._view2d_proc = None
+            self._view2d_target_path = None
+            self._view2d_adopt_on_close = False
+            self._view2d_launch_pending = False
+            self._view2d_timer.stop()
+            if launch_pending:
+                self.status_log_edit.append(f"gxbox-view2d exited during startup (code {exit_code}).")
+                if startup_output:
+                    self.status_log_edit.append(f"gxbox-view2d startup output: {startup_output}")
+                return
+            if adopt_on_close and target_path is not None and Path(target_path).exists():
+                self._adopt_entry_box_for_continue(Path(target_path))
+            elif exit_code not in (None, 0):
+                self.status_log_edit.append(f"gxbox-view2d exited with code {exit_code}.")
+                if startup_output:
+                    self.status_log_edit.append(f"gxbox-view2d output: {startup_output}")
+        except Exception as exc:
+            self.status_log_edit.append(f"gxbox-view2d monitor error: {exc}")
+            self._view2d_proc = None
+            self._view2d_target_path = None
+            self._view2d_adopt_on_close = False
+            self._view2d_launch_pending = False
+            self._view2d_timer.stop()
+
+    @staticmethod
+    def _consume_view2d_output(proc: subprocess.Popen) -> str:
+        try:
+            stdout_text, stderr_text = proc.communicate(timeout=0.2)
+        except Exception:
+            return ""
+        parts = []
+        if stdout_text:
+            text = stdout_text.strip()
+            if text:
+                parts.append(text)
+        if stderr_text:
+            text = stderr_text.strip()
+            if text:
+                parts.append(text)
+        return " | ".join(parts)
+
+    def _launch_box_view2d(self, model_path: Path, adopt_on_close: bool = False):
+        try:
+            self._view2d_proc = subprocess.Popen([
+                "gxbox-view2d",
+                str(model_path.expanduser()),
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self._view2d_target_path = str(model_path.expanduser())
+            self._view2d_adopt_on_close = bool(adopt_on_close)
+            self._view2d_launch_pending = True
+            self._view2d_timer.start()
+            self.status_log_edit.append(f"Starting gxbox-view2d for: {model_path}")
+        except Exception as exc:
+            self._view2d_proc = None
+            self._view2d_target_path = None
+            self._view2d_adopt_on_close = False
+            self._view2d_launch_pending = False
+            self.status_log_edit.append(f"Could not launch gxbox-view2d: {exc}")
+
+    def _launch_stop_stage_box_view2d(self):
+        if not self._last_model_path:
+            self.status_log_edit.append("Stop-stage completed, but no generated box file was found for gxbox-view2d.")
+            return
+        model_path = Path(self._last_model_path).expanduser()
+        if not model_path.exists():
+            self.status_log_edit.append(f"Stop-stage box missing for gxbox-view2d: {model_path}")
+            return
+        self._launch_box_view2d(model_path, adopt_on_close=True)
 
 
 @app.command()

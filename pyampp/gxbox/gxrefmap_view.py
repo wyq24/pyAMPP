@@ -15,6 +15,7 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as Navigatio
 from matplotlib.figure import Figure
 from matplotlib import colors
 import sunpy.map
+from sunpy.visualization import colormaps as sunpy_colormaps
 
 app = typer.Typer(help="View refmaps and base maps stored in a model HDF5 file.")
 
@@ -25,6 +26,21 @@ class MapSpec:
     name: str
     data_path: str
     wcs_path: str
+
+
+_AIA_REF_CMAPS = {
+    "AIA_94": "sdoaia94",
+    "AIA_131": "sdoaia131",
+    "AIA_1600": "sdoaia1600",
+    "AIA_1700": "sdoaia1700",
+    "AIA_171": "sdoaia171",
+    "AIA_193": "sdoaia193",
+    "AIA_211": "sdoaia211",
+    "AIA_304": "sdoaia304",
+    "AIA_335": "sdoaia335",
+}
+_BW_SIGNED_REFMAPS = {"bx", "by", "bz", "Bz_reference"}
+_BW_SCALAR_REFMAPS = {"ic", "Ic_reference"}
 
 
 def _decode_h5_string(value) -> str:
@@ -205,7 +221,13 @@ class RefmapViewer(QtWidgets.QMainWindow):
         self.figure.clear()
         cmap = None
         norm = None
-        if spec.name == "chromo_mask":
+        if spec.name in _AIA_REF_CMAPS:
+            cmap = sunpy_colormaps.cm.cmlist.get(_AIA_REF_CMAPS[spec.name], None)
+        elif spec.name in _BW_SIGNED_REFMAPS:
+            cmap = "gray"
+        elif spec.name in _BW_SCALAR_REFMAPS:
+            cmap = "gray"
+        elif spec.name == "chromo_mask":
             cmap = colors.ListedColormap([
                 "#000000", "#1f77b4", "#ff7f0e", "#2ca02c",
                 "#d62728", "#9467bd", "#8c564b", "#e377c2",
@@ -213,9 +235,7 @@ class RefmapViewer(QtWidgets.QMainWindow):
             ])
             norm = colors.BoundaryNorm(np.arange(0.5, 10.5, 1), cmap.N)
         elif spec.name == "Vert_current":
-            vmax = np.nanmax(np.abs(data)) if np.isfinite(data).any() else 1.0
-            norm = colors.TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax)
-            cmap = "seismic"
+            cmap = "RdBu_r"
 
         data_min = float(np.nanmin(data))
         data_max = float(np.nanmax(data))
@@ -248,7 +268,7 @@ class RefmapViewer(QtWidgets.QMainWindow):
             vmax = self._data_max
 
         log_ok = vmin > 0 and vmax > 0
-        if spec.name in ("chromo_mask", "bx", "by", "bz", "Vert_current"):
+        if spec.name in ("chromo_mask", "bx", "by", "bz", "Bz_reference", "Vert_current"):
             log_ok = False
         self.log_checkbox.setEnabled(log_ok)
         if not log_ok:

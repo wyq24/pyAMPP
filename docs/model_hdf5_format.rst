@@ -3,7 +3,8 @@ pyAMPP HDF5 Model Format
 
 This page documents the current stage-file contract written by ``gx-fov2box`` and consumed by:
 
-- ``gxbox-view`` (3D viewer),
+- ``gxbox-view3d`` (3D viewer; legacy alias: ``gxbox-view``),
+- ``gxbox-view2d`` (2D FOV / box viewer; legacy alias: ``gxbox-select``),
 - ``gxrefmap-view`` (base/refmap browser),
 - resume/rebuild workflows via ``--entry-box``.
 
@@ -13,7 +14,7 @@ File Naming
 Typical output naming pattern:
 
 - ``hmi.M_720s.YYYYMMDD_HHMMSS.<region>.CEA.NONE.h5``
-- same stem with stage suffixes ``POT``, ``BND``, ``NAS``, ``NAS.GEN``, ``NAS.CHR``
+- same stem with stage suffixes such as ``POT``, ``BND``, ``NAS``, ``NAS.GEN``, ``NAS.CHR``, ``NAS.GEN.CHR``
 
 Common Groups (All Stages)
 --------------------------
@@ -39,6 +40,18 @@ Core provenance:
 - ``metadata/disambiguation``: e.g. ``HMI`` or ``SFQ``
 - ``metadata/axis_order_2d`` and ``metadata/axis_order_3d`` when present
 - ``metadata/vector_layout`` when present
+
+``observer``
+~~~~~~~~~~~~
+
+Optional observer / FOV metadata used by 2D resume and viewer flows:
+
+- ``observer/name``
+- ``observer/fov/frame``
+- ``observer/fov/xc_arcsec``, ``observer/fov/yc_arcsec``
+- ``observer/fov/xsize_arcsec``, ``observer/fov/ysize_arcsec``
+- ``observer/fov/square``
+- ``observer/ephemeris/*`` when available
 
 ``refmaps``
 ~~~~~~~~~~~
@@ -124,7 +137,7 @@ Axis and Layout Notes
 ---------------------
 
 - 2D base/refmap arrays are map-shaped with explicit WCS headers retained.
-- 3D field arrays are stored in the package-native HDF5 convention used by current writers/readers.
+- 3D field arrays are stored in HDF5 canonical ``(z, y, x)`` order when written by current writers.
 - Viewers and adapters handle any required transpose/reindex for rendering and legacy compatibility.
 
 Resume/Entry Compatibility

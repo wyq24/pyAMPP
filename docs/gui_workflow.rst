@@ -24,9 +24,11 @@ The GUI has three path fields:
 
 Current behavior:
 
-- ``data-dir`` and ``gxmodel-dir`` persist across sessions via ``QSettings``.
+- the GUI restores the last saved session state via ``QSettings`` (geometry, workflow toggles, entry path, and repository paths),
 - If an entry box contains a valid ``metadata/execute`` path and that path exists on the current machine, the GUI pre-fills the corresponding directory field.
 - If execute paths are invalid on this machine, the GUI falls back to default local directories and warns the user.
+- ``Restore Last Saved`` reloads the persisted GUI state.
+- ``Reset to Test Defaults`` restores the built-in deterministic test geometry/time preset.
 
 Model Configuration
 -------------------
@@ -79,20 +81,23 @@ Save toggles:
 - ``--save-bounds``
 - ``--save-nas``
 - ``--save-gen``
+- ``--save-chr`` is emitted automatically when the run is allowed to reach CHR.
 
 Stop rules:
 
-- ``Stop after download`` -> ``--stop-after dl``
+- ``Stop after data download`` -> ``--stop-after dl``
 - ``NONE only`` -> ``--stop-after none``
 - ``POT only`` -> ``--stop-after pot``
 - ``NAS only`` -> ``--stop-after nas``
 - ``GEN only`` -> ``--stop-after gen``
+- default full-path completion -> ``--stop-after chr``
 
 CHR behavior:
 
-- CHR save is intentionally not user-toggleable in the GUI.
-- If execution reaches CHR, the stage is saved automatically.
-- Selecting an earlier stop stage prevents CHR from running/saving.
+- the GUI keeps the CHR checkbox non-editable, but the generated command is explicit:
+  - reaching CHR adds ``--save-chr --stop-after chr``
+- selecting an earlier stop stage prevents CHR from running/saving
+- when continuing from a ``GEN`` or ``CHR`` entry box on the default final-CHR path, the GUI adds ``--jump2chromo`` so existing line metadata is reused instead of recomputing GEN
 
 Other stage controls:
 
@@ -111,6 +116,8 @@ Command Display and Execution
 - ``Run`` launches ``gx-fov2box`` as a subprocess.
 - stdout/stderr are streamed into the status pane.
 - A successful run reports generated model paths and stage timings in the log.
+- explicit stop-stage completions auto-launch ``gxbox-view2d`` on the produced box and then adopt that box back into ``Entry Box`` for the next ``Continue`` step.
+- ``gxbox-view2d`` opens the 2D FOV / box selector directly from the GUI on demand.
 
 Operational Notes
 -----------------
