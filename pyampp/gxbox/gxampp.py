@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, QLineEd
                              QCalendarWidget, QTextEdit, QMessageBox, QDockWidget, QToolButton, QMenu,
                              QFileDialog, QStyle)
 from PyQt5.QtGui import QIcon, QFont
-from PyQt5.QtCore import QDateTime, Qt, QTimer, QSettings
+from PyQt5.QtCore import QDateTime, Qt, QTimer, QSettings, QSize
 from datetime import datetime
 from PyQt5 import uic
 
@@ -129,6 +129,9 @@ class PyAmppGUI(QMainWindow):
         self._view2d_target_path = None
         self._view2d_adopt_on_close = False
         self._view2d_launch_pending = False
+        self._view3d_proc = None
+        self._view3d_target_path = None
+        self._view3d_launch_pending = False
         self._proc_partial_line = ""
         self._proc_command = None
         self._pending_stop_after = None
@@ -147,6 +150,9 @@ class PyAmppGUI(QMainWindow):
         self._view2d_timer = QTimer(self)
         self._view2d_timer.setInterval(500)
         self._view2d_timer.timeout.connect(self._check_view2d_process)
+        self._view3d_timer = QTimer(self)
+        self._view3d_timer.setInterval(500)
+        self._view3d_timer.timeout.connect(self._check_view3d_process)
         self._settings = QSettings("SUNCAST", "pyAMPP")
         self.model_time_orig = None
         # self.rotate_to_time_button = None
@@ -221,10 +227,7 @@ class PyAmppGUI(QMainWindow):
         self.add_cmd_buttons()
         self.add_status_log()
         self._restore_or_apply_default_session_state()
-        self.update_coords_center()
-
-        self._sync_pipeline_options()
-        self.update_command_display()
+        self._refresh_after_session_state_apply()
         self.show()
 
     def _restore_or_apply_default_session_state(self):
@@ -369,6 +372,7 @@ class PyAmppGUI(QMainWindow):
             self.update_coords_center()
         except Exception:
             pass
+        self._refresh_viewer_button_state()
         self._sync_pipeline_options()
         self.update_command_display()
 
@@ -387,16 +391,10 @@ class PyAmppGUI(QMainWindow):
         self._refresh_after_session_state_apply()
 
     def on_open_fov_selector_clicked(self):
-        if self._last_model_path:
-            model_path = Path(self._last_model_path).expanduser()
-            if model_path.exists():
-                self._launch_box_view2d(model_path)
-                return
-        if self._has_entry_box():
-            entry_path = Path(self.external_box_edit.text().strip()).expanduser()
-            if entry_path.exists() and entry_path.suffix.lower() == ".h5":
-                self._launch_box_view2d(entry_path)
-                return
+        model_path = self._current_viewable_model_path()
+        if model_path is not None and model_path.suffix.lower() == ".h5":
+            self._launch_box_view2d(model_path)
+            return
         self._launch_download_fov_selector_placeholder()
 
     def closeEvent(self, event):
@@ -818,6 +816,7 @@ class PyAmppGUI(QMainWindow):
             self.entry_stage_edit.setText("N/A")
             self._set_jump_action("continue")
             self._set_model_params_enabled(True)
+            self._refresh_viewer_button_state()
             self._sync_pipeline_options()
             self.update_command_display()
             return
@@ -831,6 +830,7 @@ class PyAmppGUI(QMainWindow):
             QMessageBox.critical(self, "Invalid Entry Box", f"Could not read entry box:\n{exc}")
             self._restore_last_valid_entry_box()
             return
+        self._refresh_viewer_button_state()
         self.update_command_display()
 
     def _restore_last_valid_entry_box(self):
@@ -915,6 +915,16 @@ class PyAmppGUI(QMainWindow):
         # Hide legacy jump controls; workflow is linear with optional rebuild.
         self.jump_to_action_combo.setVisible(False)
         self.label_jumpToAction.setVisible(False)
+        if hasattr(self, "jumpToActionLayout") and self.jumpToActionLayout is not None:
+            while self.jumpToActionLayout.count():
+                item = self.jumpToActionLayout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.setParent(None)
+            if self.verticalLayout_2.count() > 0:
+                first_item = self.verticalLayout_2.itemAt(0)
+                if first_item is not None and first_item.layout() is self.jumpToActionLayout:
+                    self.verticalLayout_2.takeAt(0)
         self.model_time_edit.setDateTime(QDateTime.currentDateTimeUtc())
         self.model_time_edit.setDateTimeRange(QDateTime(2010, 1, 1, 0, 0, 0), QDateTime(QDateTime.currentDateTimeUtc()))
         self.model_time_edit.dateTimeChanged.connect(self.on_time_input_changed)
@@ -935,6 +945,52 @@ class PyAmppGUI(QMainWindow):
         self.hpc_radio_button.setText("Heliocentric")
         self.hgc_radio_button.setText("Carrington")
         self.hgs_radio_button.setText("Stonyhurst")
+        self.label_padding.setText("Pad (%):")
+
+        for edit, width in (
+            (self.grid_x_edit, 72),
+            (self.grid_y_edit, 72),
+            (self.grid_z_edit, 72),
+            (self.res_edit, 88),
+            (self.padding_size_edit, 68),
+        ):
+            edit.setMaximumWidth(width)
+            edit.setMinimumWidth(width)
+
+        grid_row_layout = None
+        for i in range(self.verticalLayout_2.count()):
+            item = self.verticalLayout_2.itemAt(i)
+            layout = item.layout() if item is not None else None
+            if layout is not None and layout.indexOf(self.grid_x_edit) >= 0:
+                grid_row_layout = layout
+                break
+
+        if grid_row_layout is not None and hasattr(self, "spacer_grid") and self.spacer_grid is not None:
+            idx = grid_row_layout.indexOf(self.spacer_grid)
+            if idx >= 0:
+                grid_row_layout.takeAt(idx)
+        if hasattr(self, "spacer_resPadding") and self.spacer_resPadding is not None:
+            idx = self.resPaddingLayout.indexOf(self.spacer_resPadding)
+            if idx >= 0:
+                self.resPaddingLayout.takeAt(idx)
+
+        merged_widgets = [
+            self.label_resolution,
+            self.res_edit,
+            self.label_padding,
+            self.padding_size_edit,
+        ]
+        if grid_row_layout is not None:
+            for widget in merged_widgets:
+                self.resPaddingLayout.removeWidget(widget)
+                grid_row_layout.addWidget(widget)
+            grid_row_layout.addStretch()
+        if hasattr(self, "resPaddingLayout") and self.resPaddingLayout is not None:
+            for i in range(self.verticalLayout_2.count()):
+                item = self.verticalLayout_2.itemAt(i)
+                if item is not None and item.layout() is self.resPaddingLayout:
+                    self.verticalLayout_2.takeAt(i)
+                    break
 
         self.proj_group = QGroupBox("Geometrical Projection")
         self.proj_cea_radio = QRadioButton("CEA")
@@ -972,19 +1028,6 @@ class PyAmppGUI(QMainWindow):
         proj_disambig_row.addWidget(self.proj_group)
         proj_disambig_row.addWidget(self.disambig_group)
         self.verticalLayout_2.addLayout(proj_disambig_row)
-
-        # Session-state convenience actions for iterative interactive work.
-        session_buttons_row = QHBoxLayout()
-        self.reset_test_defaults_button = QPushButton("Reset to Test Defaults")
-        self.restore_last_saved_button = QPushButton("Restore Last Saved")
-        self.reset_test_defaults_button.setToolTip("Reset GUI geometry/time/projection fields to the built-in test configuration.")
-        self.restore_last_saved_button.setToolTip("Restore the last saved GUI session from local settings.")
-        self.reset_test_defaults_button.clicked.connect(self.on_reset_to_test_defaults_clicked)
-        self.restore_last_saved_button.clicked.connect(self.on_restore_last_saved_clicked)
-        session_buttons_row.addWidget(self.reset_test_defaults_button)
-        session_buttons_row.addWidget(self.restore_last_saved_button)
-        session_buttons_row.addStretch()
-        self.verticalLayout_2.addLayout(session_buttons_row)
 
     def _get_jump_action(self):
         if self.modify_radio.isChecked():
@@ -1307,42 +1350,80 @@ class PyAmppGUI(QMainWindow):
         mono.setStyleHint(QFont.Monospace)
         mono.setPointSize(11)
         self.cmd_display_edit.setFont(mono)
+        self.cmd_display_edit.setLineWrapMode(QTextEdit.WidgetWidth)
+        self.cmd_display_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.cmd_display_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.cmd_display_edit.setMinimumHeight(72)
+        self.cmd_display_edit.setMaximumHeight(88)
 
     def add_cmd_buttons(self):
         """
         Adds the command buttons to the main layout.
         """
+        icon_size = QSize(20, 20)
+        button_width = 34
+        icon_dir = Path(__file__).resolve().parents[2] / "docs" / "svg"
+        self.reset_test_defaults_button = QPushButton("Reset to Test Defaults")
+        self.restore_last_saved_button = QPushButton("Restore Last Saved")
+        self.reset_test_defaults_button.setToolTip(
+            "Reset GUI geometry/time/projection fields to the built-in test configuration."
+        )
+        self.restore_last_saved_button.setToolTip("Restore the last saved GUI session from local settings.")
+        self.reset_test_defaults_button.clicked.connect(self.on_reset_to_test_defaults_clicked)
+        self.restore_last_saved_button.clicked.connect(self.on_restore_last_saved_clicked)
+        self.reset_test_defaults_button.setText("")
+        self.restore_last_saved_button.setText("")
+        self.reset_test_defaults_button.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+        self.restore_last_saved_button.setIcon(self.style().standardIcon(QStyle.SP_ArrowBack))
+        self.reset_test_defaults_button.setFixedWidth(button_width)
+        self.restore_last_saved_button.setFixedWidth(button_width)
+        self.reset_test_defaults_button.setIconSize(icon_size)
+        self.restore_last_saved_button.setIconSize(icon_size)
         self.info_only_box = QCheckBox("Info Only")
         self.info_only_box.toggled.connect(self.update_command_display)
-        # Place utility toggle with execution controls, not pipeline-flow options.
-        if self.cmd_button_layout is not None:
-            spacer_idx = max(0, self.cmd_button_layout.count() - 1)
-            self.cmd_button_layout.insertWidget(spacer_idx, self.info_only_box)
-        self.open_fov_selector_button = QPushButton("gxbox-view2d")
+        self.open_fov_selector_button = QPushButton("")
         self.open_fov_selector_button.setToolTip(
             "Open gxbox-view2d on demand (2D map/FOV viewer using current GUI fields and local cached maps if available)."
         )
+        self.open_fov_selector_button.setIcon(QIcon(str(icon_dir / "monitor.svg")))
+        self.open_fov_selector_button.setFixedWidth(button_width)
+        self.open_fov_selector_button.setIconSize(icon_size)
         self.open_fov_selector_button.clicked.connect(self.on_open_fov_selector_clicked)
-        if self.cmd_button_layout is not None:
-            spacer_idx = max(0, self.cmd_button_layout.count() - 1)
-            self.cmd_button_layout.insertWidget(spacer_idx, self.open_fov_selector_button)
         self.execute_button.clicked.connect(self.execute_command)
         self.stop_button.clicked.connect(self.stop_command)
         self.stop_button.setEnabled(False)
         self.save_button.setVisible(False)
         self.save_button.setEnabled(False)
         self.save_button.clicked.connect(self.save_command)
-        self.send_to_viewer_button = QPushButton("gxbox-view3d")
+        self.send_to_viewer_button = QPushButton("")
         self.send_to_viewer_button.setToolTip("Open the latest generated model in gxbox-view3d")
+        self.send_to_viewer_button.setIcon(QIcon(str(icon_dir / "box.svg")))
+        self.send_to_viewer_button.setFixedWidth(button_width)
+        self.send_to_viewer_button.setIconSize(icon_size)
         self.send_to_viewer_button.setEnabled(False)
-        if self.cmd_button_layout is not None:
-            spacer_idx = max(0, self.cmd_button_layout.count() - 1)
-            self.cmd_button_layout.insertWidget(spacer_idx, self.send_to_viewer_button)
         self.send_to_viewer_button.clicked.connect(self.send_to_gxbox_view)
+        self.exit_button = QPushButton("")
+        self.exit_button.setToolTip("Close pyAMPP")
+        self.exit_button.setIcon(self.style().standardIcon(QStyle.SP_DialogCloseButton))
+        self.exit_button.setFixedWidth(button_width)
+        self.exit_button.setIconSize(icon_size)
+        self.exit_button.clicked.connect(self.close)
         self.clear_button_refresh.clicked.connect(self.refresh_command)
         self.clear_button_clear.setVisible(False)
         self.clear_button_clear.setEnabled(False)
         self.clear_button_clear.clicked.connect(self.clear_command)
+        if self.cmd_button_layout is not None:
+            spacer_idx = max(0, self.cmd_button_layout.count() - 1)
+            for widget in (
+                self.reset_test_defaults_button,
+                self.restore_last_saved_button,
+                self.info_only_box,
+                self.open_fov_selector_button,
+                self.send_to_viewer_button,
+                self.exit_button,
+            ):
+                self.cmd_button_layout.insertWidget(spacer_idx, widget)
+                spacer_idx += 1
 
     def add_status_log(self):
         """
@@ -2017,7 +2098,7 @@ class PyAmppGUI(QMainWindow):
         """
         self.status_log_edit.clear()
         self._last_model_path = None
-        self.send_to_viewer_button.setEnabled(False)
+        self._refresh_viewer_button_state()
 
     def copy_console(self):
         """
@@ -2050,7 +2131,7 @@ class PyAmppGUI(QMainWindow):
             p = Path(raw).expanduser()
             if p.exists():
                 self._last_model_path = str(p)
-                self.send_to_viewer_button.setEnabled(True)
+                self._refresh_viewer_button_state()
                 return
         root = Path(self.gx_model_edit.text()).expanduser()
         if not root.exists():
@@ -2067,29 +2148,29 @@ class PyAmppGUI(QMainWindow):
                 newest = p
         if newest is not None:
             self._last_model_path = str(newest)
-            self.send_to_viewer_button.setEnabled(True)
+            self._refresh_viewer_button_state()
+
+    def _current_viewable_model_path(self) -> Path | None:
+        if self._last_model_path:
+            model_path = Path(self._last_model_path).expanduser()
+            if model_path.exists() and model_path.is_file():
+                return model_path
+        if self._has_entry_box():
+            entry_path = Path(self.external_box_edit.text().strip()).expanduser()
+            if entry_path.exists() and entry_path.is_file():
+                return entry_path
+        return None
+
+    def _refresh_viewer_button_state(self) -> None:
+        model_path = self._current_viewable_model_path()
+        self.send_to_viewer_button.setEnabled(model_path is not None)
 
     def send_to_gxbox_view(self):
-        if not self._last_model_path:
+        model_path = self._current_viewable_model_path()
+        if model_path is None:
             QMessageBox.information(self, "No Model", "No generated model was found to send.")
             return
-        model_path = Path(self._last_model_path).expanduser()
-        if not model_path.exists():
-            QMessageBox.warning(self, "Missing Model", f"Model file not found:\n{model_path}")
-            return
-        try:
-            start_dir = model_path.parent
-            subprocess.Popen([
-                "gxbox-view3d",
-                "--pick",
-                "--dir",
-                str(start_dir),
-                "--h5",
-                str(model_path),
-            ])
-            self.status_log_edit.append(f"Launched gxbox-view3d with: {model_path}")
-        except Exception as exc:
-            QMessageBox.critical(self, "Launch Failed", f"Could not launch gxbox-view3d:\n{exc}")
+        self._launch_box_view3d(model_path)
 
     def _adopt_entry_box_for_continue(self, model_path: Path) -> None:
         path_text = str(model_path.expanduser())
@@ -2162,6 +2243,23 @@ class PyAmppGUI(QMainWindow):
                 parts.append(text)
         return " | ".join(parts)
 
+    @staticmethod
+    def _consume_view3d_output(proc: subprocess.Popen) -> str:
+        try:
+            stdout_text, stderr_text = proc.communicate(timeout=0.2)
+        except Exception:
+            return ""
+        parts = []
+        if stdout_text:
+            text = stdout_text.strip()
+            if text:
+                parts.append(text)
+        if stderr_text:
+            text = stderr_text.strip()
+            if text:
+                parts.append(text)
+        return " | ".join(parts)
+
     def _launch_box_view2d(self, model_path: Path, adopt_on_close: bool = False):
         try:
             self._view2d_proc = subprocess.Popen([
@@ -2180,6 +2278,23 @@ class PyAmppGUI(QMainWindow):
             self._view2d_launch_pending = False
             self.status_log_edit.append(f"Could not launch gxbox-view2d: {exc}")
 
+    def _launch_box_view3d(self, model_path: Path):
+        try:
+            self._view3d_proc = subprocess.Popen([
+                "gxbox-view3d",
+                "--pipeline-child",
+                str(model_path.expanduser()),
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self._view3d_target_path = str(model_path.expanduser())
+            self._view3d_launch_pending = True
+            self._view3d_timer.start()
+            self.status_log_edit.append(f"Starting gxbox-view3d for: {model_path}")
+        except Exception as exc:
+            self._view3d_proc = None
+            self._view3d_target_path = None
+            self._view3d_launch_pending = False
+            QMessageBox.critical(self, "Launch Failed", f"Could not launch gxbox-view3d:\n{exc}")
+
     def _launch_stop_stage_box_view2d(self):
         if not self._last_model_path:
             self.status_log_edit.append("Stop-stage completed, but no generated box file was found for gxbox-view2d.")
@@ -2189,6 +2304,40 @@ class PyAmppGUI(QMainWindow):
             self.status_log_edit.append(f"Stop-stage box missing for gxbox-view2d: {model_path}")
             return
         self._launch_box_view2d(model_path, adopt_on_close=True)
+
+    def _check_view3d_process(self):
+        try:
+            if self._view3d_proc is None:
+                self._view3d_timer.stop()
+                return
+            if self._view3d_proc.poll() is None:
+                if self._view3d_launch_pending:
+                    self._view3d_launch_pending = False
+                    if self._view3d_target_path:
+                        self.status_log_edit.append(f"Launched gxbox-view3d with: {self._view3d_target_path}")
+                return
+            exit_code = self._view3d_proc.returncode
+            startup_output = self._consume_view3d_output(self._view3d_proc)
+            launch_pending = bool(self._view3d_launch_pending)
+            self._view3d_proc = None
+            self._view3d_target_path = None
+            self._view3d_launch_pending = False
+            self._view3d_timer.stop()
+            if launch_pending:
+                self.status_log_edit.append(f"gxbox-view3d exited during startup (code {exit_code}).")
+                if startup_output:
+                    self.status_log_edit.append(f"gxbox-view3d startup output: {startup_output}")
+                return
+            if exit_code not in (None, 0):
+                self.status_log_edit.append(f"gxbox-view3d exited with code {exit_code}.")
+                if startup_output:
+                    self.status_log_edit.append(f"gxbox-view3d output: {startup_output}")
+        except Exception as exc:
+            self.status_log_edit.append(f"gxbox-view3d monitor error: {exc}")
+            self._view3d_proc = None
+            self._view3d_target_path = None
+            self._view3d_launch_pending = False
+            self._view3d_timer.stop()
 
 
 @app.command()
@@ -2202,10 +2351,8 @@ def main(
     """
     Entry point for the PyAmppGUI application.
 
-    This function initializes the PyQt application, sets up and displays the main
-    GUI window for the Solar Data Model. It pre-configures some GUI elements with default
-    values for model time and coordinates. Default values are set programmatically
-    before the event loop starts.
+    This function initializes the PyQt application and displays the main GUI window.
+    Session/default field state is established inside ``PyAmppGUI`` during startup.
 
     :param debug: Enable debug mode with an interactive IPython session, defaults to False
     :type debug: bool, optional
@@ -2222,11 +2369,6 @@ def main(
 
     app_qt = QApplication([])
     pyampp = PyAmppGUI()
-    pyampp.model_time_edit.setDateTime(QDateTime(2024, 5, 12, 0, 0))
-    pyampp.coord_x_edit.setText('0')
-    pyampp.coord_y_edit.setText('0')
-    pyampp.update_coords_center()
-    pyampp.update_command_display()
 
     if debug:
         # Start an interactive IPython session for debugging

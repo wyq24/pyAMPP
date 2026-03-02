@@ -15,10 +15,12 @@ import numpy as np
 import astropy.units as u
 from astropy.coordinates import SkyCoord
 from astropy.time import Time
-from sunpy.coordinates import Heliocentric, get_earth
+from sunpy.coordinates import Heliocentric, HeliographicCarrington, HeliographicStonyhurst, Helioprojective, get_earth
 from sunpy.sun import constants as sun_consts
 
+from pyampp.gxbox.box import Box
 from pyampp.gxbox.boxutils import read_b3d_h5
+from pyampp.gxbox.gx_fov2box import _decode_id_text, _extract_execute_geometry, _infer_time_from_entry_loaded
 from pyampp.gxbox.magfield_viewer import MagFieldViewer
 from PyQt5.QtWidgets import QApplication, QFileDialog
 
@@ -119,12 +121,217 @@ def infer_res(b3d: dict) -> u.Quantity:
     return 1.0 * u.Mm
 
 
+def _box_from_saved_model(b3d: dict, model_path: Path):
+    meta = b3d.get("metadata", {}) if isinstance(b3d, dict) else {}
+    execute_text = _decode_meta_text(meta.get("execute", "")) if isinstance(meta, dict) else ""
+    coords, frame_mode, _projection = _extract_execute_geometry(execute_text)
+    time_iso = _infer_time_from_entry_loaded(b3d, model_path)
+    if not time_iso or coords is None:
+        return None, None
+
+    try:
+        obs_time = Time(time_iso)
+    except Exception:
+        return None, None
+
+    dims = infer_dims(b3d)
+    res = infer_res(b3d).to(u.Mm)
+    observer = get_earth(obs_time)
+    frame_obs = Helioprojective(observer=observer, obstime=obs_time)
+
+    try:
+        if (frame_mode or "hpc").lower() == "hgc":
+            box_origin = SkyCoord(
+                lon=float(coords[0]) * u.deg,
+                lat=float(coords[1]) * u.deg,
+                radius=sun_consts.radius.to(u.Mm),
+                obstime=obs_time,
+                observer=observer,
+                frame=HeliographicCarrington,
+            ).transform_to(frame_obs)
+        elif (frame_mode or "hpc").lower() == "hgs":
+            box_origin = SkyCoord(
+                lon=float(coords[0]) * u.deg,
+                lat=float(coords[1]) * u.deg,
+                radius=sun_consts.radius.to(u.Mm),
+                obstime=obs_time,
+                frame=HeliographicStonyhurst,
+            ).transform_to(frame_obs)
+        else:
+            box_origin = SkyCoord(
+                Tx=float(coords[0]) * u.arcsec,
+                Ty=float(coords[1]) * u.arcsec,
+                frame=frame_obs,
+            )
+    except Exception:
+        return None, None
+
+    box_dims = np.array(dims, dtype=float) * u.pix
+    box_hcc = Heliocentric(observer=box_origin, obstime=obs_time)
+    box_center = box_origin.transform_to(box_hcc)
+    box_dimensions = box_dims / u.pix * res
+    box_center = SkyCoord(
+        x=box_center.x,
+        y=box_center.y,
+        z=box_center.z + box_dimensions[2] / 2,
+        frame=box_center.frame,
+    )
+    box = Box(frame_obs, box_origin, box_center, box_dims, res)
+    return box, obs_time
+
+
+def _normalize_vector(vec: np.ndarray) -> np.ndarray | None:
+    arr = np.asarray(vec, dtype=float).reshape(-1)
+    if arr.size != 3:
+        return None
+    norm = float(np.linalg.norm(arr))
+    if not np.isfinite(norm) or norm <= 0:
+        return None
+    return arr / norm
+
+
+def _viewer_camera_vectors(box, obs_time: Time) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """
+    Reproduce the legacy gxbox_factory LoS camera basis for standalone HDF5 viewing.
+    """
+    box_origin = getattr(box, "_origin", None)
+    frame_obs = getattr(box, "_frame_obs", None)
+    box_view_up = getattr(box, "box_view_up", None)
+    observer = getattr(frame_obs, "observer", None)
+    if box_origin is None or frame_obs is None or observer is None or box_view_up is None:
+        return None, None
+    try:
+        box_norm_direction = _normalize_vector(
+            box_origin.transform_to(
+                Heliocentric(observer=observer, obstime=obs_time)
+            ).cartesian.xyz.value
+        )
+        if box_norm_direction is None:
+            return None, None
+        up_coords = np.diff(
+            box_view_up.transform_to(
+                Heliocentric(observer=observer, obstime=obs_time)
+            ).cartesian.xyz.value
+        )
+        view_up = _normalize_vector(np.squeeze(up_coords))
+        if view_up is None:
+            return box_norm_direction, None
+        if abs(view_up[1]) > 0:
+            view_up = np.sign(view_up[1]) * view_up
+        return box_norm_direction, view_up
+    except Exception:
+        return None, None
+
+
+def can_prepare_model_for_viewer(model_path: str | Path) -> bool:
+    """
+    Return ``True`` when a file looks like a viewer-compatible saved model.
+
+    This is a lightweight gate for enabling UI actions. It intentionally avoids
+    full SAV conversion and only checks file existence, supported suffix, and the
+    presence of recognizable top-level model groups for HDF5 files.
+    """
+    try:
+        model_path = Path(model_path).expanduser().resolve()
+    except Exception:
+        return False
+    if not model_path.exists() or not model_path.is_file():
+        return False
+    suffix = model_path.suffix.lower()
+    if suffix == ".sav":
+        return True
+    if suffix != ".h5":
+        return False
+    try:
+        b3d = read_b3d_h5(str(model_path))
+    except Exception:
+        return False
+    for key in ("corona", "nlfff", "pot", "chromo"):
+        if key in b3d and isinstance(b3d[key], dict):
+            return True
+    return False
+
+
+def prepare_model_for_viewer(model_path: str | Path) -> tuple[SimpleBox, Time, str, Path | None]:
+    """
+    Load a saved model file into the in-memory objects expected by ``MagFieldViewer``.
+
+    Returns
+    -------
+    tuple
+        ``(box, obs_time, b3dtype, temp_h5_path)`` where ``temp_h5_path`` is a
+        temporary conversion artifact for ``.sav`` inputs (or ``None`` for ``.h5``).
+    """
+    model_path = Path(model_path).expanduser().resolve()
+    temp_h5_path = None
+    if model_path.suffix.lower() == ".sav":
+        try:
+            from pyampp.tests.build_h5_from_sav import build_h5_from_sav
+        except Exception as exc:
+            raise RuntimeError(
+                "SAV input requires converter module 'pyampp.tests.build_h5_from_sav'. "
+                "Run conversion manually to H5, then reopen."
+            ) from exc
+        tmp_dir = Path(tempfile.mkdtemp(prefix="pyampp_view_h5_"))
+        temp_h5_path = tmp_dir / f"{model_path.stem}.viewer.h5"
+        build_h5_from_sav(sav_path=model_path, out_h5=temp_h5_path, template_h5=None)
+        h5_path = temp_h5_path
+        print(f"Converted SAV to temporary HDF5: {h5_path}")
+    else:
+        h5_path = model_path
+
+    b3d = read_b3d_h5(str(h5_path))
+    b3d = normalize_viewer_axis_order(b3d)
+
+    box, obs_time = _box_from_saved_model(b3d, model_path)
+    if box is None:
+        dims = infer_dims(b3d)
+        obs_time = infer_time(b3d)
+        res = infer_res(b3d)
+        frame = Heliocentric(observer=get_earth(obs_time), obstime=obs_time)
+        center = SkyCoord(0 * u.Mm, 0 * u.Mm, 0 * u.Mm, frame=frame)
+        box = SimpleBox(dims_pix=dims, res=res.to(u.Mm), b3d=b3d, _frame_obs=frame, _center=center)
+
+    if "corona" in b3d:
+        b3dtype = "corona"
+    elif "nlfff" in b3d:
+        b3dtype = "corona"
+        b3d["corona"] = b3d.pop("nlfff")
+    elif "pot" in b3d:
+        b3dtype = "corona"
+        b3d["corona"] = b3d.pop("pot")
+    elif "chromo" in b3d:
+        b3dtype = "chromo"
+        chromo = b3d.get("chromo", {})
+        if "bx" not in chromo and "bcube" in chromo:
+            bcube = chromo["bcube"]
+            if bcube.ndim == 4 and bcube.shape[-1] == 3:
+                chromo["bx"] = bcube[:, :, :, 0]
+                chromo["by"] = bcube[:, :, :, 1]
+                chromo["bz"] = bcube[:, :, :, 2]
+                b3d["chromo"] = chromo
+    else:
+        raise ValueError("No known model types found in HDF5 (expected corona/chromo).")
+
+    box.b3d = b3d
+    if hasattr(box, "corona_type"):
+        if "corona" in b3d and isinstance(b3d["corona"], dict):
+            attrs = b3d["corona"].get("attrs", {})
+            if isinstance(attrs, dict):
+                box.corona_type = attrs.get("model_type")
+            if hasattr(box, "corona_models") and box.corona_type:
+                box.corona_models[box.corona_type] = b3d["corona"]
+
+    return box, obs_time, b3dtype, temp_h5_path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Open a saved HDF5 model in the 3D viewer without recomputing.")
     parser.add_argument("h5_path", nargs="?", help="Path to the HDF5 model file (positional).")
     parser.add_argument("--h5", dest="h5_opt", help="Path to the HDF5 model file.")
     parser.add_argument("--dir", dest="start_dir", help="Initial directory for file picker when no model path is given.")
     parser.add_argument("--pick", action="store_true", help="Open file picker even when model path is provided.")
+    parser.add_argument("--pipeline-child", action="store_true", help="Open in restricted pyAMPP child mode tied to the current model file.")
     args = parser.parse_args()
 
     h5_arg = args.h5_opt or args.h5_path
@@ -157,58 +364,23 @@ def main() -> int:
         h5_arg = selected[0]
 
     model_path = Path(h5_arg).expanduser().resolve()
-    temp_h5_path = None
-    if model_path.suffix.lower() == ".sav":
-        try:
-            from pyampp.tests.build_h5_from_sav import build_h5_from_sav
-        except Exception as exc:
-            raise RuntimeError(
-                "SAV input requires converter module 'pyampp.tests.build_h5_from_sav'. "
-                "Run conversion manually to H5, then reopen."
-            ) from exc
-        tmp_dir = Path(tempfile.mkdtemp(prefix="pyampp_view_h5_"))
-        temp_h5_path = tmp_dir / f"{model_path.stem}.viewer.h5"
-        build_h5_from_sav(sav_path=model_path, out_h5=temp_h5_path, template_h5=None)
-        h5_path = temp_h5_path
-        print(f"Converted SAV to temporary HDF5: {h5_path}")
-    else:
-        h5_path = model_path
-    b3d = read_b3d_h5(str(h5_path))
-    b3d = normalize_viewer_axis_order(b3d)
-
-    dims = infer_dims(b3d)
-    obs_time = infer_time(b3d)
-    res = infer_res(b3d)
-
-    frame = Heliocentric(observer=get_earth(obs_time), obstime=obs_time)
-    center = SkyCoord(0 * u.Mm, 0 * u.Mm, 0 * u.Mm, frame=frame)
-    box = SimpleBox(dims_pix=dims, res=res.to(u.Mm), b3d=b3d, _frame_obs=frame, _center=center)
-
-    if "corona" in b3d:
-        b3dtype = "corona"
-    elif "nlfff" in b3d:
-        b3dtype = "corona"
-        b3d["corona"] = b3d.pop("nlfff")
-    elif "pot" in b3d:
-        b3dtype = "corona"
-        b3d["corona"] = b3d.pop("pot")
-    elif "chromo" in b3d:
-        b3dtype = "chromo"
-        chromo = b3d.get("chromo", {})
-        if "bx" not in chromo and "bcube" in chromo:
-            bcube = chromo["bcube"]
-            if bcube.ndim == 4 and bcube.shape[-1] == 3:
-                chromo["bx"] = bcube[:, :, :, 0]
-                chromo["by"] = bcube[:, :, :, 1]
-                chromo["bz"] = bcube[:, :, :, 2]
-                b3d["chromo"] = chromo
-    else:
-        raise ValueError("No known model types found in HDF5 (expected corona/chromo).")
+    box, obs_time, b3dtype, temp_h5_path = prepare_model_for_viewer(model_path)
 
     warnings.filterwarnings("ignore", category=PyVistaDeprecationWarning)
-    viewer = MagFieldViewer(box, time=obs_time, b3dtype=b3dtype, parent=None)
+    save_target = model_path if model_path.suffix.lower() == ".h5" else None
+    box_norm_direction, box_view_up = _viewer_camera_vectors(box, obs_time)
+    viewer = MagFieldViewer(
+        box,
+        time=obs_time,
+        b3dtype=b3dtype,
+        parent=None,
+        model_path=save_target,
+        box_norm_direction=box_norm_direction,
+        box_view_up=box_view_up,
+        session_mode="pipeline_child" if args.pipeline_child else "standalone",
+    )
     if hasattr(viewer, "app_window"):
-        viewer.app_window.setWindowTitle(f"GxBox 3D viewer - {h5_path}")
+        viewer.app_window.setWindowTitle(f"GxBox 3D viewer - {model_path}")
     viewer.show()
     if owns_app:
         app.exec_()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 from PyQt5.QtCore import QEvent, Qt
@@ -13,6 +14,8 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QPlainTextEdit,
+    QPushButton,
+    QHBoxLayout,
     QVBoxLayout,
     QWidget,
 )
@@ -37,10 +40,16 @@ class FovBoxSelectorDialog(QDialog):
     - it does not yet implement interactive plotting/dragging
     """
 
-    def __init__(self, session_input: SelectorSessionInput, parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        session_input: SelectorSessionInput,
+        parent: Optional[QWidget] = None,
+        entry_box_path: Optional[str | Path] = None,
+    ):
         super().__init__(parent)
         self._session_input = session_input
         self._accepted_selection: Optional[SelectorDialogResult] = None
+        self._entry_box_path = Path(entry_box_path).expanduser().resolve() if entry_box_path else None
         self.setWindowTitle("FOV / Box Selector")
         self.resize(1180, 760)
 
@@ -74,6 +83,7 @@ class FovBoxSelectorDialog(QDialog):
         selector_grid.addWidget(self.map_source_combo, 1, 2)
         left_layout.addLayout(selector_grid)
         self.map_box_widget = MapBoxDisplayWidget()
+        self.map_box_widget.set_entry_box_path(self._entry_box_path)
         left_layout.addWidget(self.map_box_widget, stretch=1)
         body.addWidget(left_group, 0, 0)
         body.setColumnStretch(0, 3)
@@ -196,7 +206,14 @@ class FovBoxSelectorDialog(QDialog):
             self._cancel_button.setAutoDefault(False)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
+        self._open_3d_button = QPushButton("Open 3D Viewer")
+        self._open_3d_button.clicked.connect(self.map_box_widget.open_live_3d_viewer)
+        button_row = QHBoxLayout()
+        button_row.addWidget(self._open_3d_button)
+        button_row.addStretch()
+        button_row.addWidget(buttons)
+        root.addLayout(button_row)
+        self.map_box_widget.set_action_state_callback(self._on_map_action_state_changed)
 
     def _load_session_input(self, session_input: SelectorSessionInput) -> None:
         self.map_box_widget.initialize(session_input)
@@ -254,6 +271,9 @@ class FovBoxSelectorDialog(QDialog):
         self.map_box_widget.set_square_fov(bool(session_input.square_fov))
         self._apply_square_fov_state_to_form()
         self._apply_geometry_edit_enabled_state(bool(session_input.allow_geometry_edit))
+
+    def _on_map_action_state_changed(self, can_open_3d: bool, _can_clear_lines: bool) -> None:
+        self._open_3d_button.setEnabled(bool(can_open_3d))
 
     @staticmethod
     def _context_map_ids(session_input: SelectorSessionInput) -> list[str]:
@@ -405,11 +425,19 @@ class FovBoxSelectorDialog(QDialog):
     def accepted_selection(self) -> Optional[SelectorDialogResult]:
         return self._accepted_selection
 
+    def committed_line_seeds(self):
+        return self.map_box_widget.committed_line_seeds()
+
+    def current_fov_box_selection(self):
+        return self.map_box_widget.current_fov_box_selection()
+
 
 def run_fov_box_selector(
-    session_input: SelectorSessionInput, parent: Optional[QWidget] = None
+    session_input: SelectorSessionInput,
+    parent: Optional[QWidget] = None,
+    entry_box_path: Optional[str | Path] = None,
 ) -> Optional[SelectorDialogResult]:
-    dialog = FovBoxSelectorDialog(session_input=session_input, parent=parent)
+    dialog = FovBoxSelectorDialog(session_input=session_input, parent=parent, entry_box_path=entry_box_path)
     if dialog.exec_() == QDialog.Accepted:
         return dialog.accepted_selection()
     return None

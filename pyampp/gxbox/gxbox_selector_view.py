@@ -25,6 +25,7 @@ from pyampp.gxbox.gx_fov2box import (
 from pyampp.gxbox.selector_api import (
     BoxGeometrySelection,
     CoordMode,
+    DisplayFovBoxSelection,
     DisplayFovSelection,
     SelectorDialogResult,
     SelectorSessionInput,
@@ -137,13 +138,15 @@ def _infer_dx_km_from_entry(entry_loaded: dict[str, Any]) -> float:
     return 1400.0
 
 
-def _observer_fov_from_entry(entry_loaded: dict[str, Any]) -> tuple[Optional[DisplayFovSelection], bool]:
+def _observer_fov_from_entry(
+    entry_loaded: dict[str, Any],
+) -> tuple[Optional[DisplayFovSelection], bool, Optional[DisplayFovBoxSelection]]:
     observer = entry_loaded.get("observer")
     if not isinstance(observer, dict):
-        return None, False
+        return None, False, None
     fov = observer.get("fov")
     if not isinstance(fov, dict):
-        return None, False
+        return None, False, None
     try:
         result = DisplayFovSelection(
             center_x_arcsec=float(fov["xc_arcsec"]),
@@ -151,9 +154,23 @@ def _observer_fov_from_entry(entry_loaded: dict[str, Any]) -> tuple[Optional[Dis
             width_arcsec=float(fov["xsize_arcsec"]),
             height_arcsec=float(fov["ysize_arcsec"]),
         )
-        return result, bool(fov.get("square", False))
+        fov_box_meta = observer.get("fov_box")
+        fov_box = None
+        if isinstance(fov_box_meta, dict):
+            try:
+                fov_box = DisplayFovBoxSelection(
+                    center_x_arcsec=float(fov_box_meta.get("xc_arcsec", result.center_x_arcsec)),
+                    center_y_arcsec=float(fov_box_meta.get("yc_arcsec", result.center_y_arcsec)),
+                    width_arcsec=float(fov_box_meta.get("xsize_arcsec", result.width_arcsec)),
+                    height_arcsec=float(fov_box_meta.get("ysize_arcsec", result.height_arcsec)),
+                    z_min_mm=float(fov_box_meta["zmin_mm"]),
+                    z_max_mm=float(fov_box_meta["zmax_mm"]),
+                )
+            except Exception:
+                fov_box = None
+        return result, bool(fov.get("square", False)), fov_box
     except Exception:
-        return None, False
+        return None, False, None
 
 
 def _geometry_from_entry(entry_loaded: dict[str, Any], entry_path: Path) -> tuple[str, BoxGeometrySelection]:
@@ -250,7 +267,7 @@ def _build_session_input(entry_path: Path) -> SelectorSessionInput:
     meta = entry_loaded.get("metadata", {}) if isinstance(entry_loaded, dict) else {}
     execute_text = _decode_id_text(meta.get("execute", "")) if isinstance(meta, dict) else ""
     data_dir, _gxmodel_dir = _extract_execute_paths(execute_text)
-    explicit_fov, square_fov = _observer_fov_from_entry(entry_loaded)
+    explicit_fov, square_fov, explicit_fov_box = _observer_fov_from_entry(entry_loaded)
 
     map_files = _discover_filesystem_maps(time_iso, data_dir)
     refmaps = {}
@@ -272,6 +289,7 @@ def _build_session_input(entry_path: Path) -> SelectorSessionInput:
         data_dir=data_dir or "",
         geometry=geometry,
         fov=explicit_fov,
+        fov_box=explicit_fov_box,
         square_fov=square_fov,
         allow_geometry_edit=False,
         map_ids=tuple(map_ids),
@@ -285,7 +303,12 @@ def _build_session_input(entry_path: Path) -> SelectorSessionInput:
     )
 
 
-def _persist_selector_result_to_entry(entry_path: Path, result: SelectorDialogResult) -> bool:
+def _persist_selector_result_to_entry(
+    entry_path: Path,
+    result: SelectorDialogResult,
+    line_seeds=None,
+    fov_box: DisplayFovBoxSelection | None = None,
+) -> bool:
     if entry_path.suffix.lower() != ".h5":
         return False
 
@@ -308,9 +331,17 @@ def _persist_selector_result_to_entry(entry_path: Path, result: SelectorDialogRe
     }
     observer["name"] = observer_name
     observer["fov"] = fov
+    if isinstance(fov_box, DisplayFovBoxSelection):
+        observer["fov_box"] = fov_box.as_observer_metadata(square=bool(result.square_fov))
+    else:
+        observer.pop("fov_box", None)
     if isinstance(ephemeris, dict):
         observer["ephemeris"] = ephemeris
     box_data["observer"] = observer
+    if isinstance(line_seeds, dict):
+        box_data["line_seeds"] = line_seeds
+    else:
+        box_data.pop("line_seeds", None)
     write_b3d_h5(str(entry_path), box_data)
     return True
 
@@ -337,29 +368,43 @@ def main() -> int:
 
     entry_path = Path(entry_arg).expanduser().resolve()
     session_input = _build_session_input(entry_path)
-    dialog = FovBoxSelectorDialog(session_input=session_input)
+    dialog = FovBoxSelectorDialog(session_input=session_input, entry_box_path=entry_path)
     dialog.setWindowTitle(f"FOV / Box Selector - {entry_path.name}")
-    accepted = dialog.exec_() == QDialog.Accepted
-    if accepted:
+
+    def _persist_result_if_needed() -> None:
+        if dialog.result() != QDialog.Accepted:
+            return
         result = dialog.accepted_selection()
-        if result is not None:
-            try:
-                persisted = _persist_selector_result_to_entry(entry_path, result)
-                if not persisted and entry_path.suffix.lower() == ".sav":
-                    QMessageBox.information(
-                        dialog,
-                        "FOV Not Saved",
-                        "This viewer can persist updated FOV metadata only to .h5 boxes. "
-                        "The current .sav file was left unchanged.",
-                    )
-            except Exception as exc:
-                QMessageBox.warning(
+        if result is None:
+            return
+        line_seeds = dialog.committed_line_seeds()
+        fov_box = dialog.current_fov_box_selection()
+        try:
+            persisted = _persist_selector_result_to_entry(entry_path, result, line_seeds=line_seeds, fov_box=fov_box)
+            if not persisted and entry_path.suffix.lower() == ".sav":
+                QMessageBox.information(
                     dialog,
-                    "Save Failed",
-                    f"Failed to write updated observer FOV metadata:\n{exc}",
+                    "FOV Not Saved",
+                    "This viewer can persist updated FOV metadata only to .h5 boxes. "
+                    "The current .sav file was left unchanged.",
                 )
+        except Exception as exc:
+            QMessageBox.warning(
+                dialog,
+                "Save Failed",
+                f"Failed to write updated observer FOV metadata:\n{exc}",
+            )
+
     if owns_app:
-        app.processEvents()
+        dialog.finished.connect(lambda _code: (_persist_result_if_needed(), app.quit()))
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        app.exec_()
+    else:
+        accepted = dialog.exec_() == QDialog.Accepted
+        if accepted:
+            _persist_result_if_needed()
     return 0
 
 

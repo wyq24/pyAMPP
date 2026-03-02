@@ -502,6 +502,50 @@ def write_b3d_h5(filename, box_b3d):
                 group.attrs.update(attrs)
 
 
+def update_line_seeds_h5(filename, line_seeds):
+    """
+    Update only the ``line_seeds`` group in an existing HDF5 model file.
+
+    Parameters
+    ----------
+    filename : str
+        Target ``.h5`` model path.
+    line_seeds : dict | None
+        Serialized ``line_seeds`` payload. If falsy/non-dict, any existing
+        ``line_seeds`` group is removed.
+    """
+
+    def _write_node(group, key, value):
+        if isinstance(value, dict):
+            sub = group.create_group(key)
+            attrs = value.get("attrs", {}) if isinstance(value.get("attrs"), dict) else {}
+            for sub_key, sub_val in value.items():
+                if sub_key == "attrs":
+                    continue
+                _write_node(sub, sub_key, sub_val)
+            if attrs:
+                sub.attrs.update(attrs)
+            return
+        if isinstance(value, str):
+            group.create_dataset(key, data=np.bytes_(value))
+            return
+        group.create_dataset(key, data=value)
+
+    with h5py.File(filename, 'r+') as hdf_file:
+        if "line_seeds" in hdf_file:
+            del hdf_file["line_seeds"]
+        if not isinstance(line_seeds, dict) or not line_seeds:
+            return
+        group = hdf_file.create_group("line_seeds")
+        attrs = line_seeds.get("attrs", {}) if isinstance(line_seeds.get("attrs"), dict) else {}
+        for key, value in line_seeds.items():
+            if key == "attrs":
+                continue
+            _write_node(group, key, value)
+        if attrs:
+            group.attrs.update(attrs)
+
+
 # Backward-compatible SFQ exports.
 from pyampp.sfq import get_str_mag as get_str_mag
 from pyampp.sfq import sfq_frame as sfq_frame

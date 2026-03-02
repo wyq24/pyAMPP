@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from pathlib import Path
 import threading
@@ -11,14 +12,16 @@ import matplotlib.colors as mcolors
 from astropy.io import fits
 from astropy.coordinates import SkyCoord
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas, NavigationToolbar2QT as NavigationToolbar
+from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont, QIcon
 from PyQt5.QtCore import QSize
 from PyQt5.QtWidgets import (
     QButtonGroup,
     QHBoxLayout,
+    QLabel,
     QStyle,
     QSizePolicy,
     QToolButton,
@@ -30,8 +33,10 @@ from sunpy.coordinates import Heliocentric, HeliographicCarrington, Heliographic
 from sunpy.visualization import colormaps as sunpy_colormaps
 
 from .box import Box
-from .boxutils import hmi_b2ptr, hmi_disambig, load_sunpy_map_compat
-from .selector_api import BoxGeometrySelection, CoordMode, DisplayFovSelection, SelectorSessionInput
+from .boxutils import hmi_b2ptr, hmi_disambig, load_sunpy_map_compat, read_b3d_h5
+from .magfield_viewer import MagFieldViewer, generate_streamlines_from_line_seeds
+from .selector_api import BoxGeometrySelection, CoordMode, DisplayFovBoxSelection, DisplayFovSelection, SelectorSessionInput
+from .view_h5 import _viewer_camera_vectors, can_prepare_model_for_viewer, prepare_model_for_viewer
 
 _DISPLAY_MAP_ALIASES = {
     "Bz": "magnetogram",
@@ -69,6 +74,7 @@ class MapBoxViewState:
     selected_bottom_id: Optional[str] = None
     geometry: Optional[BoxGeometrySelection] = None
     fov: Optional[DisplayFovSelection] = None
+    fov_box: Optional[DisplayFovBoxSelection] = None
     map_files: dict[str, str] | None = None
     refmaps: dict | None = None
     base_maps: dict | None = None
@@ -135,6 +141,20 @@ class MapBoxDisplayWidget(QWidget):
         self._overlay_center_artist = None
         self._overlay_corner_artists = []
         self._drag_state = None
+        self._entry_box_path: Optional[Path] = None
+        self._viewer3d = None
+        self._viewer3d_temp_h5_path: Optional[Path] = None
+        self._viewer3d_watchdog = QTimer(self)
+        self._viewer3d_watchdog.setInterval(400)
+        self._viewer3d_watchdog.timeout.connect(self._check_viewer3d_state)
+        self._hidden_for_live_3d = False
+        self._viewer3d_close_handled = False
+        self._committed_line_seeds = None
+        self._fieldline_frame_hcc = None
+        self._fieldline_frame_obs = None
+        self._fieldline_streamlines = []
+        self._fieldline_z_base = 0.0
+        self._fieldline_artists = []
         self._map_info_callback = None
         self._status_callback = None
         self._fov_change_callback = None
@@ -147,6 +167,7 @@ class MapBoxDisplayWidget(QWidget):
         self._interaction_mode = "auto"
         self._mouse_actions_enabled = False
         self._geometry_edit_enabled = True
+        self._action_state_callback = None
         self._fig = Figure(figsize=(7.5, 5.0))
         self._canvas = FigureCanvas(self._fig)
         self._canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -161,20 +182,21 @@ class MapBoxDisplayWidget(QWidget):
         self._full_view_btn = self._make_svg_button("expand.svg", "Full Sun View", self.show_full_sun_view)
         self._box_view_btn = self._make_svg_button("shrink.svg", "Zoom canvas to image FOV", self.show_box_fov_view)
         self._recompute_fov_btn = self._make_svg_button("rectangle-horizontal.svg", "Recompute image FOV from projected 3D box", self.recompute_fov_from_box)
-        self._fov_x_minus_btn = self._make_svg_button("shrink-horizontal.svg", "Decrease FOV X range", lambda: self._nudge_fov_size("x", -1))
-        self._fov_x_plus_btn = self._make_svg_button("expand-horizontal.svg", "Increase FOV X range", lambda: self._nudge_fov_size("x", +1))
-        self._fov_y_minus_btn = self._make_svg_button("shrink-vertical.svg", "Decrease FOV Y range", lambda: self._nudge_fov_size("y", -1))
-        self._fov_y_plus_btn = self._make_svg_button("expand-vertical.svg", "Increase FOV Y range", lambda: self._nudge_fov_size("y", +1))
-        self._left_btn = self._make_svg_button("arrow-left.svg", "Move box center left", lambda: self._nudge_box_center("x", -1))
-        self._right_btn = self._make_svg_button("arrow-right.svg", "Move box center right", lambda: self._nudge_box_center("x", +1))
-        self._down_btn = self._make_svg_button("arrow-down.svg", "Move box center down", lambda: self._nudge_box_center("y", -1))
-        self._up_btn = self._make_svg_button("arrow-up.svg", "Move box center up", lambda: self._nudge_box_center("y", +1))
-        self._x_minus_btn = self._make_svg_button("shrink-horizontal.svg", "Decrease X box size", lambda: self._nudge_box_size("x", -1))
-        self._x_plus_btn = self._make_svg_button("expand-horizontal.svg", "Increase X box size", lambda: self._nudge_box_size("x", +1))
-        self._y_minus_btn = self._make_svg_button("shrink-vertical.svg", "Decrease Y box size", lambda: self._nudge_box_size("y", -1))
-        self._y_plus_btn = self._make_svg_button("expand-vertical.svg", "Increase Y box size", lambda: self._nudge_box_size("y", +1))
+        self._control_mode_label = QLabel("BOX Controls")
+        self._left_btn = self._make_svg_button("arrow-left.svg", "Move box center left", lambda: self._nudge_primary_center("x", -1))
+        self._right_btn = self._make_svg_button("arrow-right.svg", "Move box center right", lambda: self._nudge_primary_center("x", +1))
+        self._down_btn = self._make_svg_button("arrow-down.svg", "Move box center down", lambda: self._nudge_primary_center("y", -1))
+        self._up_btn = self._make_svg_button("arrow-up.svg", "Move box center up", lambda: self._nudge_primary_center("y", +1))
+        self._x_minus_btn = self._make_svg_button("shrink-horizontal.svg", "Decrease X box size", lambda: self._nudge_primary_size("x", -1))
+        self._x_plus_btn = self._make_svg_button("expand-horizontal.svg", "Increase X box size", lambda: self._nudge_primary_size("x", +1))
+        self._y_minus_btn = self._make_svg_button("shrink-vertical.svg", "Decrease Y box size", lambda: self._nudge_primary_size("y", -1))
+        self._y_plus_btn = self._make_svg_button("expand-vertical.svg", "Increase Y box size", lambda: self._nudge_primary_size("y", +1))
+        self._xy_minus_btn = self._make_svg_button("shrink.svg", "Decrease X and Y box size together", lambda: self._nudge_primary_size_xy(-1))
+        self._xy_plus_btn = self._make_svg_button("expand.svg", "Increase X and Y box size together", lambda: self._nudge_primary_size_xy(+1))
         self._zoom_in_btn = self._make_svg_button("zoom-in.svg", "Zoom In (centered on image FOV)", lambda: self._scale_view(1 / 1.25))
         self._zoom_out_btn = self._make_svg_button("zoom-out.svg", "Zoom Out (centered on image FOV)", lambda: self._scale_view(1.25))
+        self._can_open_3d = False
+        self._can_clear_lines = False
 
         toolbar = QHBoxLayout()
         toolbar.setContentsMargins(0, 0, 0, 0)
@@ -182,13 +204,11 @@ class MapBoxDisplayWidget(QWidget):
         toolbar.addWidget(self._full_view_btn)
         toolbar.addWidget(self._box_view_btn)
         toolbar.addWidget(self._recompute_fov_btn)
-        toolbar.addWidget(self._fov_x_minus_btn)
-        toolbar.addWidget(self._fov_x_plus_btn)
-        toolbar.addWidget(self._fov_y_minus_btn)
-        toolbar.addWidget(self._fov_y_plus_btn)
         toolbar.addWidget(self._zoom_in_btn)
         toolbar.addWidget(self._zoom_out_btn)
-        toolbar.addSpacing(12)
+        toolbar.addSpacing(8)
+        toolbar.addWidget(self._control_mode_label)
+        toolbar.addSpacing(8)
         toolbar.addWidget(self._left_btn)
         toolbar.addWidget(self._right_btn)
         toolbar.addWidget(self._down_btn)
@@ -198,12 +218,15 @@ class MapBoxDisplayWidget(QWidget):
         toolbar.addWidget(self._x_plus_btn)
         toolbar.addWidget(self._y_minus_btn)
         toolbar.addWidget(self._y_plus_btn)
+        toolbar.addWidget(self._xy_minus_btn)
+        toolbar.addWidget(self._xy_plus_btn)
         toolbar.addStretch()
 
         layout = QVBoxLayout(self)
         layout.addLayout(toolbar)
         layout.addWidget(self._canvas_host, stretch=1)
         layout.addWidget(self._nav_toolbar)
+        self._refresh_control_mode_ui()
 
     def _make_mode_button(self, text: str, mode: str, checked: bool = False) -> QToolButton:
         btn = QToolButton(self)
@@ -233,6 +256,16 @@ class MapBoxDisplayWidget(QWidget):
         f = QFont(btn.font())
         f.setPointSize(10)
         btn.setFont(f)
+        btn.clicked.connect(callback)
+        return btn
+
+    def _make_text_button(self, text: str, tooltip: str, callback) -> QToolButton:
+        btn = QToolButton(self)
+        btn.setText(text)
+        btn.setToolTip(tooltip)
+        btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        btn.setAutoRaise(False)
+        btn.setMinimumHeight(24)
         btn.clicked.connect(callback)
         return btn
 
@@ -316,6 +349,7 @@ class MapBoxDisplayWidget(QWidget):
             selected_bottom_id=selected_bottom_id,
             geometry=session_input.geometry,
             fov=session_input.fov,
+            fov_box=session_input.fov_box,
             map_files=dict(session_input.map_files or {}),
             refmaps=dict(session_input.refmaps or {}),
             base_maps=dict(session_input.base_maps or {}),
@@ -326,6 +360,7 @@ class MapBoxDisplayWidget(QWidget):
         self._refresh_status_text()
         self._refresh_map_info()
         self._refresh_plot()
+        self._refresh_fieldlines_from_committed_seeds()
         self._update_fov_control_enabled_state()
         self._start_background_cache_build()
 
@@ -384,18 +419,23 @@ class MapBoxDisplayWidget(QWidget):
 
     def set_geometry_edit_enabled(self, enabled: bool) -> None:
         self._geometry_edit_enabled = bool(enabled)
-        for btn in (
-            self._left_btn,
-            self._right_btn,
-            self._down_btn,
-            self._up_btn,
-            self._x_minus_btn,
-            self._x_plus_btn,
-            self._y_minus_btn,
-            self._y_plus_btn,
-        ):
-            btn.setEnabled(self._geometry_edit_enabled)
+        self._refresh_control_mode_ui()
         self._refresh_status_text()
+
+    def set_entry_box_path(self, entry_box_path: Optional[str | Path]) -> None:
+        self._entry_box_path = Path(entry_box_path).expanduser().resolve() if entry_box_path else None
+        self._committed_line_seeds = None
+        if self._entry_box_path is not None and self._entry_box_path.suffix.lower() == ".h5":
+            try:
+                box_data = read_b3d_h5(str(self._entry_box_path))
+                line_seeds = box_data.get("line_seeds")
+                if isinstance(line_seeds, dict):
+                    self._committed_line_seeds = copy.deepcopy(line_seeds)
+            except Exception:
+                self._committed_line_seeds = None
+        self._refresh_open_3d_state()
+        self._emit_action_state()
+        self._refresh_fieldlines_from_committed_seeds()
 
     def set_geometry_selection(self, selection: BoxGeometrySelection) -> None:
         if self._state is None:
@@ -421,6 +461,7 @@ class MapBoxDisplayWidget(QWidget):
                 height_arcsec=selection.width_arcsec,
             )
         self._state.fov = selection
+        self._sync_fov_box_to_selection()
         self._refresh_status_text()
         self._refresh_plot(preserve_current_view=self._should_preserve_pixel_view())
         if self._fov_change_callback is not None:
@@ -442,9 +483,166 @@ class MapBoxDisplayWidget(QWidget):
             )
 
     def _update_fov_control_enabled_state(self) -> None:
-        square = bool(self._state.square_fov) if self._state is not None else False
-        self._fov_y_minus_btn.setEnabled(not square)
-        self._fov_y_plus_btn.setEnabled(not square)
+        self._refresh_control_mode_ui()
+
+    def set_action_state_callback(self, callback) -> None:
+        self._action_state_callback = callback
+        self._emit_action_state()
+
+    def _emit_action_state(self) -> None:
+        if self._action_state_callback is not None:
+            self._action_state_callback(self._can_open_3d, self._can_clear_lines)
+
+    def _refresh_open_3d_state(self) -> None:
+        self._can_open_3d = (
+            self._viewer3d is None
+            and self._entry_box_path is not None
+            and can_prepare_model_for_viewer(self._entry_box_path)
+        )
+
+    def _on_viewer3d_closed(self, *_args) -> None:
+        close_was_handled = self._viewer3d_close_handled
+        if not close_was_handled and self._viewer3d is not None:
+            try:
+                self.commit_live_3d_edits(
+                    self._viewer3d._collect_line_seeds_snapshot(),
+                    self._viewer3d._collect_streamlines(),
+                    z_base=self._viewer3d.grid_zbase,
+                )
+                close_was_handled = True
+            except Exception:
+                pass
+        self._viewer3d = None
+        self._viewer3d_temp_h5_path = None
+        self._viewer3d_watchdog.stop()
+        if self._hidden_for_live_3d and not self._viewer3d_close_handled:
+            host = self.window()
+            host.show()
+            host.raise_()
+            host.activateWindow()
+            self._hidden_for_live_3d = False
+        self._viewer3d_close_handled = False
+        self._refresh_open_3d_state()
+        self._emit_action_state()
+        if not close_was_handled:
+            self._set_runtime_status("Live 3D viewer closed.")
+
+    def committed_line_seeds(self):
+        return copy.deepcopy(self._committed_line_seeds) if isinstance(self._committed_line_seeds, dict) else None
+
+    def _refresh_fieldlines_from_committed_seeds(self) -> None:
+        if self._current_map is None or self._current_axes is None:
+            return
+        if self._entry_box_path is None:
+            self.clear_fieldlines()
+            return
+        if not isinstance(self._committed_line_seeds, dict):
+            self.clear_fieldlines()
+            return
+        try:
+            box, _obs_time, b3dtype, _temp_h5_path = prepare_model_for_viewer(self._entry_box_path)
+            box.b3d["line_seeds"] = copy.deepcopy(self._committed_line_seeds)
+            self._fieldline_frame_hcc = getattr(getattr(box, "_center", None), "frame", None)
+            self._fieldline_frame_obs = getattr(box, "_frame_obs", None)
+            streamlines, z_base = generate_streamlines_from_line_seeds(box, b3dtype, self._committed_line_seeds)
+            if streamlines:
+                self.plot_fieldlines(streamlines, z_base=z_base)
+            else:
+                self.clear_fieldlines()
+        except Exception as exc:
+            self._set_runtime_status(f"Failed to restore saved field lines: {exc}")
+
+    def commit_live_3d_edits(self, line_seeds, streamlines, z_base=0.0) -> None:
+        self._committed_line_seeds = copy.deepcopy(line_seeds) if isinstance(line_seeds, dict) else None
+        self._viewer3d_close_handled = True
+        if self._hidden_for_live_3d:
+            host = self.window()
+            host.show()
+            host.raise_()
+            host.activateWindow()
+            self._hidden_for_live_3d = False
+        self.plot_fieldlines(streamlines, z_base=z_base)
+        self._set_runtime_status("Accepted 3D seed edits into the 2D session model.")
+
+    def cancel_live_3d_edits(self) -> None:
+        self._viewer3d_close_handled = True
+        if self._hidden_for_live_3d:
+            host = self.window()
+            host.show()
+            host.raise_()
+            host.activateWindow()
+            self._hidden_for_live_3d = False
+        self._set_runtime_status("Canceled 3D seed edits; kept the 2D session model unchanged.")
+
+    def _check_viewer3d_state(self) -> None:
+        if self._viewer3d is None:
+            self._viewer3d_watchdog.stop()
+            return
+        try:
+            window = self._viewer3d.app_window if hasattr(self._viewer3d, "app_window") else self._viewer3d
+            if not window.isVisible():
+                self._on_viewer3d_closed()
+        except Exception:
+            self._on_viewer3d_closed()
+
+    def _control_target_mode(self) -> str:
+        return "box" if self._geometry_edit_enabled else "fov"
+
+    def _refresh_control_mode_ui(self) -> None:
+        mode = self._control_target_mode()
+        if mode == "box":
+            self._control_mode_label.setText("BOX Controls")
+            self._left_btn.setToolTip("Move box center left")
+            self._right_btn.setToolTip("Move box center right")
+            self._down_btn.setToolTip("Move box center down")
+            self._up_btn.setToolTip("Move box center up")
+            self._x_minus_btn.setToolTip("Decrease X box size")
+            self._x_plus_btn.setToolTip("Increase X box size")
+            self._y_minus_btn.setToolTip("Decrease Y box size")
+            self._y_plus_btn.setToolTip("Increase Y box size")
+            self._xy_minus_btn.setToolTip("Decrease X and Y box size together")
+            self._xy_plus_btn.setToolTip("Increase X and Y box size together")
+            self._recompute_fov_btn.setEnabled(False)
+            self._y_minus_btn.setEnabled(True)
+            self._y_plus_btn.setEnabled(True)
+            self._xy_minus_btn.setEnabled(True)
+            self._xy_plus_btn.setEnabled(True)
+        else:
+            square = bool(self._state.square_fov) if self._state is not None else False
+            self._control_mode_label.setText("FOV Controls")
+            self._left_btn.setToolTip("Move FOV center left")
+            self._right_btn.setToolTip("Move FOV center right")
+            self._down_btn.setToolTip("Move FOV center down")
+            self._up_btn.setToolTip("Move FOV center up")
+            self._x_minus_btn.setToolTip("Decrease FOV X size")
+            self._x_plus_btn.setToolTip("Increase FOV X size")
+            self._y_minus_btn.setToolTip("Decrease FOV Y size")
+            self._y_plus_btn.setToolTip("Increase FOV Y size")
+            self._xy_minus_btn.setToolTip("Decrease FOV X and Y size together")
+            self._xy_plus_btn.setToolTip("Increase FOV X and Y size together")
+            self._recompute_fov_btn.setEnabled(self._projected_box_fov is not None)
+            self._y_minus_btn.setEnabled(not square)
+            self._y_plus_btn.setEnabled(not square)
+            self._xy_minus_btn.setEnabled(True)
+            self._xy_plus_btn.setEnabled(True)
+
+    def _nudge_primary_center(self, axis: str, sign: int) -> None:
+        if self._control_target_mode() == "box":
+            self._nudge_box_center(axis, sign)
+        else:
+            self._nudge_fov_center(axis, sign)
+
+    def _nudge_primary_size(self, axis: str, sign: int) -> None:
+        if self._control_target_mode() == "box":
+            self._nudge_box_size(axis, sign)
+        else:
+            self._nudge_fov_size(axis, sign)
+
+    def _nudge_primary_size_xy(self, sign: int) -> None:
+        if self._control_target_mode() == "box":
+            self._nudge_box_size_xy(sign)
+        else:
+            self._nudge_fov_size_xy(sign)
 
     def current_geometry_selection(self) -> Optional[BoxGeometrySelection]:
         if self._state is None:
@@ -455,6 +653,11 @@ class MapBoxDisplayWidget(QWidget):
         if self._state is None:
             return None
         return self._state.fov
+
+    def current_fov_box_selection(self) -> Optional[DisplayFovBoxSelection]:
+        if self._state is None:
+            return None
+        return self._state.fov_box
 
     def projected_box_fov(self) -> Optional[DisplayFovSelection]:
         return self._projected_box_fov
@@ -479,6 +682,18 @@ class MapBoxDisplayWidget(QWidget):
 
     def state(self) -> Optional[MapBoxViewState]:
         return self._state
+
+    def _sync_fov_box_to_selection(self) -> None:
+        if self._state is None or self._state.fov is None or self._state.fov_box is None:
+            return
+        self._state.fov_box = DisplayFovBoxSelection(
+            center_x_arcsec=float(self._state.fov.center_x_arcsec),
+            center_y_arcsec=float(self._state.fov.center_y_arcsec),
+            width_arcsec=float(self._state.fov.width_arcsec),
+            height_arcsec=float(self._state.fov.height_arcsec),
+            z_min_mm=float(self._state.fov_box.z_min_mm),
+            z_max_mm=float(self._state.fov_box.z_max_mm),
+        )
 
     def _should_preserve_pixel_view(self) -> bool:
         return self._view_mode == "full_sun"
@@ -1189,14 +1404,216 @@ class MapBoxDisplayWidget(QWidget):
             self._full_view_limits = (ax.get_xlim(), ax.get_ylim())
             if preserve_current_view and prev_xlim is not None and prev_ylim is not None:
                 self._restore_preserved_view(prev_xlim, prev_ylim)
+            elif self._view_mode == "box_fov" and self._state is not None and self._state.fov is not None:
+                self._set_view_window_hpc(
+                    center_x_arcsec=float(self._state.fov.center_x_arcsec),
+                    center_y_arcsec=float(self._state.fov.center_y_arcsec),
+                    width_arcsec=max(float(self._state.fov.width_arcsec) * 1.10, 1e-3),
+                    height_arcsec=max(float(self._state.fov.height_arcsec) * 1.10, 1e-3),
+                )
         except Exception as exc:
             ax = self._fig.add_subplot(111)
             ax.text(0.5, 0.5, f"Plot failed:\n{exc}", ha="center", va="center")
             ax.axis("off")
 
         self._fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.93))
+        self._render_fieldlines()
         self._canvas.draw_idle()
         self._update_cursor_for_mode()
+
+    def open_live_3d_viewer(self) -> None:
+        self._check_viewer3d_state()
+        if self._viewer3d is not None:
+            try:
+                self._viewer3d.show()
+                if hasattr(self._viewer3d, "app_window"):
+                    self._viewer3d.app_window.showNormal()
+                    self._viewer3d.app_window.raise_()
+                    self._viewer3d.app_window.activateWindow()
+                return
+            except Exception:
+                self._viewer3d = None
+                self._viewer3d_temp_h5_path = None
+                self._refresh_open_3d_state()
+                self._emit_action_state()
+        if self._entry_box_path is None:
+            self._set_runtime_status("3D viewer unavailable: no entry box is attached to this selector.")
+            return
+        try:
+            box, obs_time, b3dtype, temp_h5_path = prepare_model_for_viewer(self._entry_box_path)
+            if isinstance(self._committed_line_seeds, dict):
+                box.b3d["line_seeds"] = copy.deepcopy(self._committed_line_seeds)
+            else:
+                box.b3d.pop("line_seeds", None)
+            box_norm_direction, box_view_up = _viewer_camera_vectors(box, obs_time)
+            self._fieldline_frame_hcc = getattr(getattr(box, "_center", None), "frame", None)
+            self._fieldline_frame_obs = getattr(box, "_frame_obs", None)
+            self._viewer3d_close_handled = False
+            self._viewer3d = MagFieldViewer(
+                box,
+                time=obs_time,
+                b3dtype=b3dtype,
+                parent=self,
+                box_norm_direction=box_norm_direction,
+                box_view_up=box_view_up,
+                session_mode="embedded",
+            )
+            self._viewer3d_temp_h5_path = temp_h5_path
+            if hasattr(self._viewer3d, "app_window"):
+                self._viewer3d.app_window.setWindowTitle(f"GxBox 3D viewer - {self._entry_box_path.name}")
+                self._viewer3d.app_window.destroyed.connect(self._on_viewer3d_closed)
+            else:
+                self._viewer3d.destroyed.connect(self._on_viewer3d_closed)
+            self._refresh_open_3d_state()
+            self._emit_action_state()
+            self._viewer3d_watchdog.start()
+            host = self.window()
+            host.hide()
+            self._hidden_for_live_3d = True
+            self._viewer3d.show()
+            if hasattr(self._viewer3d, "app_window"):
+                self._viewer3d.app_window.showNormal()
+                self._viewer3d.app_window.raise_()
+                self._viewer3d.app_window.activateWindow()
+            self._set_runtime_status(f"Opened live 3D viewer for: {self._entry_box_path}")
+        except Exception as exc:
+            self._viewer3d = None
+            self._viewer3d_temp_h5_path = None
+            self._refresh_open_3d_state()
+            self._emit_action_state()
+            self._set_runtime_status(f"3D viewer launch failed: {exc}")
+
+    def clear_fieldlines(self) -> None:
+        self._fieldline_streamlines = []
+        self._fieldline_z_base = 0.0
+        while self._fieldline_artists:
+            artist = self._fieldline_artists.pop()
+            try:
+                artist.remove()
+            except Exception:
+                pass
+        self._can_clear_lines = False
+        self._emit_action_state()
+        self._canvas.draw_idle()
+        self._set_runtime_status("Cleared over-plotted field lines.")
+
+    def plot_fieldlines(self, streamlines, z_base=0.0) -> None:
+        self._fieldline_streamlines = list(streamlines or [])
+        self._fieldline_z_base = float(z_base)
+        rendered = self._render_fieldlines()
+        self._can_clear_lines = bool(self._fieldline_streamlines)
+        self._emit_action_state()
+        self._canvas.draw_idle()
+        if self._fieldline_streamlines:
+            if rendered > 0:
+                self._set_runtime_status(
+                    f"Received {len(self._fieldline_streamlines)} field-line bundle(s) from 3D viewer; "
+                    f"rendered {rendered} line(s)."
+                )
+            else:
+                self._set_runtime_status(
+                    f"Received {len(self._fieldline_streamlines)} field-line bundle(s) from 3D viewer, "
+                    "but no line segments projected into the current 2D view."
+                )
+
+    def _render_fieldlines(self) -> int:
+        while self._fieldline_artists:
+            artist = self._fieldline_artists.pop()
+            try:
+                artist.remove()
+            except Exception:
+                pass
+        if not self._fieldline_streamlines or self._current_axes is None or self._current_map is None:
+            return 0
+        rendered_count = 0
+        try:
+            frame_hcc = self._fieldline_frame_hcc
+            frame_obs = self._fieldline_frame_obs
+            if frame_hcc is None or frame_obs is None:
+                self._set_runtime_status(
+                    "Field-line overlay unavailable: no legacy-equivalent 3D viewer frames are attached."
+                )
+                return 0
+            cmap = mcolors.LinearSegmentedColormap.from_list(
+                "selector_fieldlines",
+                ["#4c9aff", "#f6c945", "#e85d3f"],
+                N=256,
+            )
+            norm = mcolors.Normalize(vmin=0.0, vmax=1000.0)
+            for streamlines_subset in self._fieldline_streamlines:
+                for coord, field in self._extract_streamlines(streamlines_subset):
+                    # Mirror legacy gxbox_factory.plot_fieldlines():
+                    # convert streamline coords from HCC to observer HPC, project to
+                    # map pixels, then render pixel-space LineCollection segments.
+                    coord_hcc = SkyCoord(
+                        x=coord[:, 0] * u.Mm,
+                        y=coord[:, 1] * u.Mm,
+                        z=(coord[:, 2] + self._fieldline_z_base) * u.Mm,
+                        frame=frame_hcc,
+                    )
+                    coord_hpc = coord_hcc.transform_to(frame_obs)
+                    xpix, ypix = self._current_map.world_to_pixel(coord_hpc)
+                    x = np.asarray(xpix.value if hasattr(xpix, "value") else xpix, dtype=float)
+                    y = np.asarray(ypix.value if hasattr(ypix, "value") else ypix, dtype=float)
+                    magnitude = np.asarray(field["magnitude"], dtype=float)
+                    if x.size < 2 or y.size < 2 or magnitude.size < 2:
+                        continue
+                    finite = np.isfinite(x) & np.isfinite(y)
+                    if np.count_nonzero(finite) < 2:
+                        continue
+                    segments = []
+                    colors = []
+                    for i in range(len(x) - 1):
+                        if not (finite[i] and finite[i + 1]):
+                            continue
+                        segments.append(((x[i], y[i]), (x[i + 1], y[i + 1])))
+                        color_idx = min(i, magnitude.size - 1)
+                        colors.append(cmap(norm(magnitude[color_idx])))
+                    if not segments:
+                        continue
+                    lc = LineCollection(segments, colors=colors, linewidths=0.7, alpha=0.7)
+                    lc.set_zorder(20)
+                    self._current_axes.add_collection(lc)
+                    self._fieldline_artists.append(lc)
+                    rendered_count += 1
+        except Exception as exc:
+            self._set_runtime_status(f"Field-line overlay failed: {exc}")
+            return 0
+        return rendered_count
+
+    @staticmethod
+    def _extract_streamlines(streamlines) -> list[tuple[np.ndarray, dict[str, np.ndarray]]]:
+        out = []
+        lines_arr = np.asarray(streamlines.lines)
+        points = np.asarray(streamlines.points)
+        i = 0
+        n_lines = int(lines_arr.shape[0])
+        while i < n_lines:
+            num_points = int(lines_arr[i])
+            start_idx = int(lines_arr[i + 1])
+            end_idx = start_idx + num_points
+            coord = points[start_idx:end_idx]
+            bx = np.asarray(streamlines["bx"][start_idx:end_idx])
+            by = np.asarray(streamlines["by"][start_idx:end_idx])
+            bz = np.asarray(streamlines["bz"][start_idx:end_idx])
+            out.append(
+                (
+                    coord,
+                    {
+                        "bx": bx,
+                        "by": by,
+                        "bz": bz,
+                        "magnitude": np.sqrt(bx ** 2 + by ** 2 + bz ** 2),
+                    },
+                )
+            )
+            i += num_points + 1
+        return out
+
+    def _set_runtime_status(self, message: str) -> None:
+        self._last_status_text = message
+        if self._status_callback is not None:
+            self._status_callback(message)
 
     def save_current_plot(self, output_path: str) -> None:
         self._fig.savefig(output_path, dpi=150, bbox_inches="tight")
@@ -1306,6 +1723,8 @@ class MapBoxDisplayWidget(QWidget):
                 )
                 if self._fov_change_callback is not None:
                     self._fov_change_callback(self._state.fov)
+            if self._state.fov_box is None:
+                self._state.fov_box = self._compute_fov_box_from_geometry()
             fov_rect = self._fov_selection_to_pixel_rect(smap, self._state.fov)
             fx0, fy0 = fov_rect.get_x(), fov_rect.get_y()
             fw, fh = fov_rect.get_width(), fov_rect.get_height()
@@ -1512,7 +1931,7 @@ class MapBoxDisplayWidget(QWidget):
         ax = self._current_axes
         x0, x1 = ax.get_xlim()
         y0, y1 = ax.get_ylim()
-        if center_px is None and self._state is not None and self._state.fov is not None and self._current_map is not None:
+        if self._state is not None and self._state.fov is not None and self._current_map is not None:
             try:
                 observer = getattr(self._current_map, "observer_coordinate", None) or "earth"
                 obstime = getattr(self._current_map, "date", None)
@@ -1545,6 +1964,7 @@ class MapBoxDisplayWidget(QWidget):
         if not self._geometry_edit_enabled or self._state is None or self._state.geometry is None:
             return
         geom = self._state.geometry
+        step = self._coarse_box_grid_step(axis)
         new_geom = BoxGeometrySelection(
             coord_mode=geom.coord_mode,
             coord_x=geom.coord_x,
@@ -1555,23 +1975,35 @@ class MapBoxDisplayWidget(QWidget):
             dx_km=geom.dx_km,
         )
         if axis == "x":
-            new_geom.grid_x = max(1, geom.grid_x + int(sign))
+            new_geom.grid_x = max(1, geom.grid_x + int(sign) * step)
         elif axis == "y":
-            new_geom.grid_y = max(1, geom.grid_y + int(sign))
+            new_geom.grid_y = max(1, geom.grid_y + int(sign) * step)
         else:
             return
+        self.set_geometry_selection(new_geom)
+
+    def _nudge_box_size_xy(self, sign: int) -> None:
+        if not self._geometry_edit_enabled or self._state is None or self._state.geometry is None:
+            return
+        geom = self._state.geometry
+        step_x = self._coarse_box_grid_step("x")
+        step_y = self._coarse_box_grid_step("y")
+        new_geom = BoxGeometrySelection(
+            coord_mode=geom.coord_mode,
+            coord_x=geom.coord_x,
+            coord_y=geom.coord_y,
+            grid_x=max(1, geom.grid_x + int(sign) * step_x),
+            grid_y=max(1, geom.grid_y + int(sign) * step_y),
+            grid_z=geom.grid_z,
+            dx_km=geom.dx_km,
+        )
         self.set_geometry_selection(new_geom)
 
     def _nudge_fov_size(self, axis: str, sign: int) -> None:
         if self._state is None or self._state.fov is None:
             return
         fov = self._state.fov
-        step = 1.0
-        if self._state.geometry is not None and self._current_map is not None:
-            try:
-                step = max(1e-3, self._geometry_pixel_arcsec(self._state.geometry, self._current_map))
-            except Exception:
-                step = 1.0
+        step = self._coarse_fov_step(axis)
         width = float(fov.width_arcsec)
         height = float(fov.height_arcsec)
         if axis == "x":
@@ -1593,11 +2025,52 @@ class MapBoxDisplayWidget(QWidget):
             )
         )
 
+    def _nudge_fov_size_xy(self, sign: int) -> None:
+        if self._state is None or self._state.fov is None:
+            return
+        fov = self._state.fov
+        step_x = self._coarse_fov_step("x")
+        step_y = self._coarse_fov_step("y")
+        width = max(step_x, float(fov.width_arcsec) + int(sign) * step_x)
+        height = max(step_y, float(fov.height_arcsec) + int(sign) * step_y)
+        if self._state.square_fov:
+            height = width
+        self.set_fov_selection(
+            DisplayFovSelection(
+                center_x_arcsec=fov.center_x_arcsec,
+                center_y_arcsec=fov.center_y_arcsec,
+                width_arcsec=width,
+                height_arcsec=height,
+            )
+        )
+
+    def _nudge_fov_center(self, axis: str, sign: int) -> None:
+        if self._state is None or self._state.fov is None:
+            return
+        fov = self._state.fov
+        step = self._coarse_fov_step(axis)
+        cx = float(fov.center_x_arcsec)
+        cy = float(fov.center_y_arcsec)
+        if axis == "x":
+            cx += float(sign) * step
+        elif axis == "y":
+            cy += float(sign) * step
+        else:
+            return
+        self.set_fov_selection(
+            DisplayFovSelection(
+                center_x_arcsec=cx,
+                center_y_arcsec=cy,
+                width_arcsec=fov.width_arcsec,
+                height_arcsec=fov.height_arcsec,
+            )
+        )
+
     def _nudge_box_center(self, axis: str, sign: int) -> None:
         if not self._geometry_edit_enabled or self._state is None or self._state.geometry is None or self._current_map is None:
             return
         geom = self._state.geometry
-        step_arcsec = self._geometry_pixel_arcsec(geom, self._current_map)
+        step_arcsec = self._coarse_box_center_step_arcsec(axis)
         if not np.isfinite(step_arcsec) or step_arcsec <= 0:
             return
         center_hpc = self._geometry_center_hpc_for_map(geom, self._current_map)
@@ -1620,6 +2093,67 @@ class MapBoxDisplayWidget(QWidget):
         new_geom = self._geometry_from_world_center(geom, nudged_center)
         self.set_geometry_selection(new_geom)
 
+    def _coarse_box_grid_step(self, axis: str) -> int:
+        if self._state is None or self._state.geometry is None:
+            return 1
+        geom = self._state.geometry
+        dim = geom.grid_x if axis == "x" else geom.grid_y if axis == "y" else geom.grid_z
+        return max(1, int(round(float(dim) * 0.10)))
+
+    def _coarse_fov_step(self, axis: str) -> float:
+        if self._state is None or self._state.fov is None:
+            return 1.0
+        fov = self._state.fov
+        span = float(fov.width_arcsec) if axis == "x" else float(fov.height_arcsec)
+        base_step = 1.0
+        if self._state.geometry is not None and self._current_map is not None:
+            try:
+                base_step = max(1e-3, self._geometry_pixel_arcsec(self._state.geometry, self._current_map))
+            except Exception:
+                base_step = 1.0
+        return max(base_step, abs(span) * 0.10)
+
+    def _coarse_box_center_step_arcsec(self, axis: str) -> float:
+        if self._state is None or self._state.geometry is None or self._current_map is None:
+            return 0.0
+        geom = self._state.geometry
+        step_arcsec = self._geometry_pixel_arcsec(geom, self._current_map)
+        if not np.isfinite(step_arcsec) or step_arcsec <= 0:
+            return 0.0
+        grid_step = self._coarse_box_grid_step(axis)
+        return float(step_arcsec) * float(grid_step)
+
+    def _compute_fov_box_from_geometry(self) -> Optional[DisplayFovBoxSelection]:
+        if self._state is None or self._state.fov is None or self._current_map is None:
+            return None
+        box = self._build_legacy_box(self._current_map)
+        if box is None:
+            return None
+        observer = getattr(self._current_map, "observer_coordinate", None) or "earth"
+        obstime = getattr(self._current_map, "date", None)
+        try:
+            frame_hcc_obs = Heliocentric(observer=observer, obstime=obstime)
+            xx = []
+            yy = []
+            zz = []
+            for edge in box.all_edges:
+                edge_hcc = edge.transform_to(frame_hcc_obs)
+                xx.extend(np.asarray(edge_hcc.x.to_value(u.Mm), dtype=float).ravel().tolist())
+                yy.extend(np.asarray(edge_hcc.y.to_value(u.Mm), dtype=float).ravel().tolist())
+                zz.extend(np.asarray(edge_hcc.z.to_value(u.Mm), dtype=float).ravel().tolist())
+            z_arr = np.asarray(zz, dtype=float)
+            finite = np.isfinite(z_arr)
+            if not np.any(finite):
+                return None
+            z_arr = z_arr[finite]
+            z_min = float(np.nanmin(z_arr))
+            z_max = float(np.nanmax(z_arr))
+            span = max(1e-3, z_max - z_min)
+            pad = 0.10 * span
+            return DisplayFovBoxSelection.from_display_fov(self._state.fov, z_min - pad, z_max + pad)
+        except Exception:
+            return None
+
     def recompute_fov_from_box(self) -> None:
         if self._state is None or self._projected_box_fov is None:
             return
@@ -1635,10 +2169,10 @@ class MapBoxDisplayWidget(QWidget):
                 height_arcsec=height,
             )
         )
+        self._state.fov_box = self._compute_fov_box_from_geometry()
+        self._refresh_status_text()
 
     def _on_scroll(self, event) -> None:
-        if not self._mouse_actions_enabled:
-            return
         if self._current_axes is None or event.inaxes is not self._current_axes:
             return
         if event.xdata is None or event.ydata is None:

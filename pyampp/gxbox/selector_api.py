@@ -62,6 +62,7 @@ class SelectorSessionInput:
     data_dir: str
     geometry: BoxGeometrySelection
     fov: "DisplayFovSelection | None" = None
+    fov_box: "DisplayFovBoxSelection | None" = None
     square_fov: bool = False
     allow_geometry_edit: bool = True
     map_ids: tuple[str, ...] = ()
@@ -98,6 +99,47 @@ class DisplayFovSelection:
 
 
 @dataclass(slots=True)
+class DisplayFovBoxSelection:
+    """Observer-aligned 3D FOV box.
+
+    The x/y footprint matches the image-plane FOV rectangle in helioprojective
+    arcsec. The z extent is stored in observer-centric heliocentric coordinates
+    (Mm) along the line of sight, where larger values are closer to the
+    observer.
+    """
+
+    center_x_arcsec: float
+    center_y_arcsec: float
+    width_arcsec: float
+    height_arcsec: float
+    z_min_mm: float
+    z_max_mm: float
+
+    @classmethod
+    def from_display_fov(cls, fov: "DisplayFovSelection", z_min_mm: float, z_max_mm: float) -> "DisplayFovBoxSelection":
+        return cls(
+            center_x_arcsec=float(fov.center_x_arcsec),
+            center_y_arcsec=float(fov.center_y_arcsec),
+            width_arcsec=float(fov.width_arcsec),
+            height_arcsec=float(fov.height_arcsec),
+            z_min_mm=float(z_min_mm),
+            z_max_mm=float(z_max_mm),
+        )
+
+    def as_observer_metadata(self, *, square: bool = False) -> dict[str, float | str | bool]:
+        return {
+            "frame": "observer_heliocentric",
+            "xc_arcsec": float(self.center_x_arcsec),
+            "yc_arcsec": float(self.center_y_arcsec),
+            "xsize_arcsec": float(self.width_arcsec),
+            "ysize_arcsec": float(self.height_arcsec),
+            "zmin_mm": float(self.z_min_mm),
+            "zmax_mm": float(self.z_max_mm),
+            "square": bool(square),
+        }
+
+
+@dataclass(slots=True)
 class SelectorDialogResult:
     """Accepted result returned by the standalone selector dialog."""
 
@@ -117,6 +159,7 @@ __all__ = [
     "CoordMode",
     "BoxGeometrySelection",
     "DisplayFovSelection",
+    "DisplayFovBoxSelection",
     "SelectorDialogResult",
     "SelectorSessionInput",
     "GeometrySelectionConsumer",
