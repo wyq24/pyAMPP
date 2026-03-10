@@ -53,6 +53,28 @@ Core inputs:
   - ``HMI`` (default, no extra flag)
   - ``SFQ`` (adds ``--sfq`` when applicable)
 
+Downloader Controls
+-------------------
+
+The time row includes downloader controls that map directly to the CLI:
+
+- ``Downloader: DRMS``:
+  - default backend
+  - emits no extra backend flag
+- ``Downloader: Fido``:
+  - emits ``--use-fido``
+- ``Use cache``:
+  - checked by default
+  - when unchecked, emits ``--force-download``
+
+Current downloader policy:
+
+- ``DRMS`` is the default because it now follows the IDL-style JSOC workflow more closely:
+  - resolve the nearest record explicitly
+  - download the raw export
+  - normalize it into a reusable local FITS cache file
+- ``Fido`` remains available as the legacy fallback path.
+
 Entry-Box Modes
 ---------------
 
@@ -118,9 +140,15 @@ Command Display and Execution
 - A successful run reports generated model paths and stage timings in the log.
 - explicit stop-stage completions auto-launch ``gxbox-view2d`` on the produced box and then adopt that box back into ``Entry Box`` for the next ``Continue`` step.
 - ``gxbox-view2d`` opens the 2D FOV / box selector directly from the GUI on demand.
+- The bottom command row includes a command-export dropdown:
+  - ``Copy Command``
+  - ``Save Script As...``
 
 Operational Notes
 -----------------
 
 - If you modify package code, reinstall with ``pip install -e .`` before re-launching the GUI.
 - Cached file reuse depends on ``--data-dir`` and timestamp/series compatibility with downloader filename matching.
+- For clean downloader benchmarks:
+  - GUI: uncheck ``Use cache``
+  - CLI: add ``--force-download``

@@ -9,6 +9,8 @@ from typing import Any, Optional
 
 import astropy.units as u
 import numpy as np
+from astropy.io import fits
+from sunpy.coordinates import HeliographicStonyhurst
 from astropy.time import Time
 from PyQt5.QtWidgets import QApplication, QFileDialog, QDialog, QMessageBox
 
@@ -30,8 +32,79 @@ from pyampp.gxbox.selector_api import (
     SelectorDialogResult,
     SelectorSessionInput,
 )
+from pyampp.gxbox.observer_restore import build_pb0r_metadata_from_ephemeris, resolve_observer_with_info
 
-_DEFAULT_MAP_IDS = ("Bz", "Ic", "Br", "Bp", "Bt", "Vert_current", "chromo_mask", "94", "131", "1600", "1700", "171", "193", "211", "304", "335")
+_DEFAULT_MAP_IDS = (
+    "Bz",
+    "Ic",
+    "B_rho",
+    "B_theta",
+    "B_phi",
+    "disambig",
+    "Vert_current",
+    "chromo_mask",
+    "94",
+    "131",
+    "1600",
+    "1700",
+    "171",
+    "193",
+    "211",
+    "304",
+    "335",
+)
+
+def _normalize_observer_key(observer_key: str | None) -> str:
+    raw = observer_key
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", "ignore")
+    if isinstance(raw, np.ndarray) and raw.shape == ():
+        raw = raw.item()
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8", "ignore")
+    key = str(raw or "earth").strip().lower()
+    aliases = {
+        "custom": "custom",
+        "sdo": "sdo",
+        "sdo/aia": "sdo",
+        "sdo/hmi": "sdo",
+        "earth": "earth",
+        "solo": "solar orbiter",
+        "solar-orbiter": "solar orbiter",
+        "solarorbiter": "solar orbiter",
+        "solar orbiter": "solar orbiter",
+        "stereo a": "stereo-a",
+        "stereo-a": "stereo-a",
+        "stereoa": "stereo-a",
+        "stereo b": "stereo-b",
+        "stereo-b": "stereo-b",
+        "stereob": "stereo-b",
+    }
+    return aliases.get(key, "earth")
+
+
+def _observer_display_label(observer_key: str | None) -> str:
+    return {
+        "earth": "Earth",
+        "sdo": "SDO",
+        "solar orbiter": "Solar Orbiter",
+        "stereo-a": "STEREO-A",
+        "stereo-b": "STEREO-B",
+        "custom": "Custom",
+    }.get(_normalize_observer_key(observer_key), "Earth")
+
+
+def _base_display_id(base_key: str) -> str:
+    key = str(base_key).lower()
+    aliases = {
+        "bx": "Bx",
+        "by": "By",
+        "bz": "Bz",
+        "ic": "Ic",
+        "vert_current": "Vert_current",
+        "chromo_mask": "chromo_mask",
+    }
+    return aliases.get(key, key)
 
 
 def _pick_entry_file(initial: Optional[str], start_dir: Optional[str]) -> Optional[str]:
@@ -101,6 +174,16 @@ def _parse_execute_box_dims_and_dx(execute_text: str) -> tuple[Optional[tuple[in
 
 
 def _infer_dims_from_entry(entry_loaded: dict[str, Any]) -> tuple[int, int, int]:
+    meta = entry_loaded.get("metadata", {}) if isinstance(entry_loaded, dict) else {}
+    axis_order = _decode_id_text(meta.get("axis_order_3d", "")).strip().lower() if isinstance(meta, dict) else ""
+
+    def _dims_from_shape(shape: tuple[int, ...]) -> tuple[int, int, int]:
+        if len(shape) < 3:
+            return (150, 75, 150)
+        if axis_order == "zyx":
+            return (int(shape[2]), int(shape[1]), int(shape[0]))
+        return (int(shape[0]), int(shape[1]), int(shape[2]))
+
     for group_name in ("corona", "chromo"):
         grp = entry_loaded.get(group_name)
         if not isinstance(grp, dict):
@@ -109,14 +192,14 @@ def _infer_dims_from_entry(entry_loaded: dict[str, Any]) -> tuple[int, int, int]
             if key in grp:
                 arr = np.asarray(grp[key])
                 if arr.ndim >= 3:
-                    return tuple(int(v) for v in arr.shape[:3])
+                    return _dims_from_shape(tuple(int(v) for v in arr.shape[:3]))
         for key in ("bcube", "chromo_bcube"):
             if key in grp:
                 arr = np.asarray(grp[key])
                 if arr.ndim == 4 and arr.shape[-1] == 3:
-                    return tuple(int(v) for v in arr.shape[:3])
+                    return _dims_from_shape(tuple(int(v) for v in arr.shape[:3]))
                 if arr.ndim == 4 and arr.shape[0] == 3:
-                    return tuple(int(v) for v in arr.shape[1:4])
+                    return _dims_from_shape(tuple(int(v) for v in arr.shape[1:4]))
     return (150, 75, 150)
 
 
@@ -165,6 +248,9 @@ def _observer_fov_from_entry(
                     height_arcsec=float(fov_box_meta.get("ysize_arcsec", result.height_arcsec)),
                     z_min_mm=float(fov_box_meta["zmin_mm"]),
                     z_max_mm=float(fov_box_meta["zmax_mm"]),
+                    observer_key=_normalize_observer_key(
+                        fov_box_meta.get("observer_key", observer.get("name", "earth"))
+                    ),
                 )
             except Exception:
                 fov_box = None
@@ -220,9 +306,14 @@ def _available_map_ids_from_sources(map_files: dict[str, str], refmaps: dict[str
     fs_availability = {
         "Bz": "magnetogram" in map_files,
         "Ic": "continuum" in map_files,
-        "Br": all(k in map_files for k in ("field", "inclination", "azimuth", "disambig")),
-        "Bp": all(k in map_files for k in ("field", "inclination", "azimuth", "disambig")),
-        "Bt": all(k in map_files for k in ("field", "inclination", "azimuth", "disambig")),
+        "B_rho": "field" in map_files,
+        "B_theta": "inclination" in map_files,
+        "B_phi": "azimuth" in map_files,
+        "disambig": "disambig" in map_files,
+        # Backward-compatible legacy IDs; these now map to measured HPC products.
+        "Br": "field" in map_files,
+        "Bp": "inclination" in map_files,
+        "Bt": "azimuth" in map_files,
     }
     ref_availability = {
         "Bz": "Bz_reference" in refmaps,
@@ -241,9 +332,6 @@ def _available_map_ids_from_sources(map_files: dict[str, str], refmaps: dict[str
     base_availability = {
         "Bz": "bz" in base_maps,
         "Ic": "ic" in base_maps,
-        "Br": "bz" in base_maps,
-        "Bp": "bx" in base_maps,
-        "Bt": "by" in base_maps,
         "chromo_mask": "chromo_mask" in base_maps,
     }
     for map_id in _DEFAULT_MAP_IDS:
@@ -258,6 +346,12 @@ def _available_map_ids_from_sources(map_files: dict[str, str], refmaps: dict[str
                 out.append(map_id)
         elif map_id in map_files:
             out.append(map_id)
+    for base_key in sorted(base_maps.keys()):
+        display_id = _base_display_id(base_key)
+        if display_id not in out:
+            out.append(display_id)
+    if "Vert_current" in refmaps and "Vert_current" not in out:
+        out.append("Vert_current")
     return out or list(_DEFAULT_MAP_IDS)
 
 
@@ -268,6 +362,32 @@ def _build_session_input(entry_path: Path) -> SelectorSessionInput:
     execute_text = _decode_id_text(meta.get("execute", "")) if isinstance(meta, dict) else ""
     data_dir, _gxmodel_dir = _extract_execute_paths(execute_text)
     explicit_fov, square_fov, explicit_fov_box = _observer_fov_from_entry(entry_loaded)
+    observer_meta = entry_loaded.get("observer") if isinstance(entry_loaded, dict) else None
+    observer_name = observer_meta.get("name", "earth") if isinstance(observer_meta, dict) else "earth"
+    display_observer_key = _normalize_observer_key(observer_name)
+    custom_observer_ephemeris = None
+    custom_observer_label = None
+    custom_observer_source = None
+    if isinstance(observer_meta, dict):
+        raw_ephemeris = observer_meta.get("ephemeris")
+        raw_label = _decode_id_text(observer_meta.get("label", "")).strip() or None
+        raw_source = _decode_id_text(observer_meta.get("source", "")).strip() or None
+        custom_needed = (
+            display_observer_key == "custom"
+            or _normalize_observer_key(observer_name) == "custom"
+            or (
+                isinstance(explicit_fov_box, DisplayFovBoxSelection)
+                and _normalize_observer_key(explicit_fov_box.observer_key) == "custom"
+            )
+        )
+        if custom_needed and isinstance(raw_ephemeris, dict):
+            custom_observer_ephemeris = {
+                key: raw_ephemeris[key]
+                for key in ("obs_date", "obs_time", "hgln_obs_deg", "hglt_obs_deg", "dsun_cm", "rsun_cm")
+                if key in raw_ephemeris
+            } or None
+            custom_observer_label = raw_label or "Custom"
+            custom_observer_source = raw_source
 
     map_files = _discover_filesystem_maps(time_iso, data_dir)
     refmaps = {}
@@ -275,11 +395,24 @@ def _build_session_input(entry_path: Path) -> SelectorSessionInput:
     if isinstance(raw_refmaps, dict):
         refmaps = raw_refmaps
     base_maps = {}
+    base_wcs_header = None
     raw_base = entry_loaded.get("base")
     if isinstance(raw_base, dict):
-        for key in ("bx", "by", "bz", "ic", "chromo_mask"):
+        for key in ("index", "index_header", "wcs_header"):
             if key in raw_base:
-                base_maps[key] = raw_base[key]
+                try:
+                    base_wcs_header = _decode_id_text(raw_base.get(key))
+                except Exception:
+                    base_wcs_header = None
+                if base_wcs_header and str(base_wcs_header).strip():
+                    break
+        for key, value in raw_base.items():
+            try:
+                arr = np.asarray(value)
+            except Exception:
+                continue
+            if arr.ndim == 2:
+                base_maps[str(key).lower()] = value
     map_ids = _available_map_ids_from_sources(map_files, refmaps, base_maps)
     initial_map = "171" if "171" in map_ids else ("Bz" if "Bz" in map_ids else (map_ids[0] if map_ids else None))
     map_source_mode = "filesystem" if map_files else ("embedded" if refmaps else "auto")
@@ -296,8 +429,13 @@ def _build_session_input(entry_path: Path) -> SelectorSessionInput:
         map_files=map_files or None,
         refmaps=refmaps or None,
         base_maps=base_maps or None,
+        base_wcs_header=base_wcs_header,
         base_geometry=geometry,
         map_source_mode=map_source_mode,
+        display_observer_key=display_observer_key,
+        custom_observer_ephemeris=custom_observer_ephemeris,
+        custom_observer_label=custom_observer_label,
+        custom_observer_source=custom_observer_source,
         initial_map_id=initial_map,
         pad_frac=0.10,
     )
@@ -308,6 +446,7 @@ def _persist_selector_result_to_entry(
     result: SelectorDialogResult,
     line_seeds=None,
     fov_box: DisplayFovBoxSelection | None = None,
+    observer_state: dict[str, Any] | None = None,
 ) -> bool:
     if entry_path.suffix.lower() != ".h5":
         return False
@@ -321,6 +460,26 @@ def _persist_selector_result_to_entry(
 
     observer_name = observer.get("name", "earth")
     ephemeris = observer.get("ephemeris")
+    display_observer_key = _normalize_observer_key(
+        observer_state.get("display_observer_key") if isinstance(observer_state, dict) else observer_name
+    )
+    raw_custom_ephemeris = (
+        observer_state.get("custom_observer_ephemeris")
+        if isinstance(observer_state, dict)
+        else None
+    )
+    custom_observer_label = (
+        str(observer_state.get("custom_observer_label", "")).strip()
+        if isinstance(observer_state, dict)
+        else ""
+    )
+    custom_observer_source = (
+        str(observer_state.get("custom_observer_source", "")).strip()
+        if isinstance(observer_state, dict)
+        else ""
+    )
+    if not isinstance(raw_custom_ephemeris, dict):
+        raw_custom_ephemeris = None
     fov = {
         "frame": "helioprojective",
         "xc_arcsec": float(result.fov.center_x_arcsec),
@@ -329,14 +488,109 @@ def _persist_selector_result_to_entry(
         "ysize_arcsec": float(result.fov.height_arcsec),
         "square": bool(result.square_fov),
     }
-    observer["name"] = observer_name
+    observer["name"] = str(display_observer_key or "earth")
     observer["fov"] = fov
     if isinstance(fov_box, DisplayFovBoxSelection):
         observer["fov_box"] = fov_box.as_observer_metadata(square=bool(result.square_fov))
     else:
         observer.pop("fov_box", None)
-    if isinstance(ephemeris, dict):
-        observer["ephemeris"] = ephemeris
+    persisted_fov_meta = observer.get("fov_box", {}) if isinstance(observer.get("fov_box"), dict) else {}
+    fov_observer_key = (
+        str(fov_box.observer_key)
+        if isinstance(fov_box, DisplayFovBoxSelection)
+        else _normalize_observer_key(persisted_fov_meta.get("observer_key", observer["name"]))
+    )
+    needs_custom_ephemeris = (
+        display_observer_key == "custom"
+        or _normalize_observer_key(fov_observer_key) == "custom"
+    )
+    if needs_custom_ephemeris and custom_observer_label:
+        observer["label"] = custom_observer_label
+    else:
+        observer["label"] = _observer_display_label(display_observer_key)
+    if needs_custom_ephemeris and custom_observer_source:
+        observer["source"] = custom_observer_source
+    else:
+        observer.pop("source", None)
+    resolved_ephemeris: dict[str, float | str] = {}
+    obs_time = _infer_time_from_entry_loaded(box_data, entry_path)
+    if obs_time:
+        try:
+            when = Time(obs_time)
+        except Exception:
+            when = None
+    else:
+        when = None
+    if needs_custom_ephemeris and raw_custom_ephemeris:
+        resolved_ephemeris = {
+            key: raw_custom_ephemeris[key]
+            for key in ("obs_date", "obs_time", "hgln_obs_deg", "hglt_obs_deg", "dsun_cm", "rsun_cm")
+            if key in raw_custom_ephemeris
+        }
+        if when is not None and "obs_date" not in resolved_ephemeris:
+            resolved_ephemeris["obs_date"] = when.isot
+    else:
+        if when is not None:
+            resolved_ephemeris["obs_date"] = when.isot
+            coord, _warning, _used_key = resolve_observer_with_info(box_data, display_observer_key, when)
+            if coord is not None:
+                try:
+                    obs_hgs = coord.transform_to(HeliographicStonyhurst(obstime=when))
+                    resolved_ephemeris["hgln_obs_deg"] = float(obs_hgs.lon.to_value(u.deg))
+                    resolved_ephemeris["hglt_obs_deg"] = float(obs_hgs.lat.to_value(u.deg))
+                    resolved_ephemeris["dsun_cm"] = float(coord.radius.to_value(u.cm))
+                except Exception:
+                    pass
+    if "rsun_cm" not in resolved_ephemeris:
+        refmaps = box_data.get("refmaps", {}) if isinstance(box_data, dict) else {}
+        for key in ("Bz_reference", "Ic_reference"):
+            payload = refmaps.get(key) if isinstance(refmaps, dict) else None
+            if not isinstance(payload, dict):
+                continue
+            header_text = payload.get("wcs_header")
+            if header_text is None:
+                continue
+            try:
+                text = _decode_id_text(header_text).replace("\\n", "\n")
+                header = fits.Header.fromstring(text, sep="\n")
+                if "RSUN_REF" in header:
+                    resolved_ephemeris["rsun_cm"] = float(u.Quantity(header["RSUN_REF"], u.m).to_value(u.cm))
+                    break
+            except Exception:
+                continue
+    if not resolved_ephemeris and isinstance(ephemeris, dict):
+        resolved_ephemeris = {
+            key: ephemeris[key]
+            for key in ("obs_date", "obs_time", "hgln_obs_deg", "hglt_obs_deg", "dsun_cm", "rsun_cm")
+            if key in ephemeris
+        }
+    if needs_custom_ephemeris or display_observer_key == "custom":
+        if resolved_ephemeris:
+            observer["ephemeris"] = resolved_ephemeris
+            pb0r = build_pb0r_metadata_from_ephemeris(
+                resolved_ephemeris,
+                observer_key="custom",
+                obs_time=resolved_ephemeris.get("obs_date"),
+            )
+            if pb0r:
+                observer["pb0r"] = pb0r
+            else:
+                observer.pop("pb0r", None)
+        else:
+            observer.pop("ephemeris", None)
+            observer.pop("pb0r", None)
+    elif resolved_ephemeris:
+        observer["ephemeris"] = resolved_ephemeris
+        pb0r = build_pb0r_metadata_from_ephemeris(
+            resolved_ephemeris,
+            observer_key=observer.get("name"),
+            obs_time=resolved_ephemeris.get("obs_date"),
+        )
+        if pb0r:
+            observer["pb0r"] = pb0r
+    else:
+        observer.pop("ephemeris", None)
+        observer.pop("pb0r", None)
     box_data["observer"] = observer
     if isinstance(line_seeds, dict):
         box_data["line_seeds"] = line_seeds
@@ -379,8 +633,15 @@ def main() -> int:
             return
         line_seeds = dialog.committed_line_seeds()
         fov_box = dialog.current_fov_box_selection()
+        observer_state = dialog.current_observer_persistence_state()
         try:
-            persisted = _persist_selector_result_to_entry(entry_path, result, line_seeds=line_seeds, fov_box=fov_box)
+            persisted = _persist_selector_result_to_entry(
+                entry_path,
+                result,
+                line_seeds=line_seeds,
+                fov_box=fov_box,
+                observer_state=observer_state,
+            )
             if not persisted and entry_path.suffix.lower() == ".sav":
                 QMessageBox.information(
                     dialog,

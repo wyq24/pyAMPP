@@ -69,8 +69,15 @@ class SelectorSessionInput:
     map_files: dict[str, str] | None = None
     refmaps: dict[str, dict[str, Any]] | None = None
     base_maps: dict[str, Any] | None = None
+    base_wcs_header: str | None = None
     base_geometry: "BoxGeometrySelection | None" = None
     map_source_mode: str = "auto"
+    display_observer_key: str = "earth"
+    custom_observer_ephemeris: dict[str, Any] | None = None
+    custom_observer_label: str | None = None
+    custom_observer_source: str | None = None
+    available_observer_keys: tuple[str, ...] | None = None
+    observer_availability_notice: str | None = None
     initial_map_id: str | None = None
     pad_frac: float | None = None
 
@@ -114,9 +121,18 @@ class DisplayFovBoxSelection:
     height_arcsec: float
     z_min_mm: float
     z_max_mm: float
+    corners_local_mm: tuple[tuple[float, float, float], ...] | None = None
+    observer_key: str = "earth"
 
     @classmethod
-    def from_display_fov(cls, fov: "DisplayFovSelection", z_min_mm: float, z_max_mm: float) -> "DisplayFovBoxSelection":
+    def from_display_fov(
+        cls,
+        fov: "DisplayFovSelection",
+        z_min_mm: float,
+        z_max_mm: float,
+        *,
+        observer_key: str = "earth",
+    ) -> "DisplayFovBoxSelection":
         return cls(
             center_x_arcsec=float(fov.center_x_arcsec),
             center_y_arcsec=float(fov.center_y_arcsec),
@@ -124,10 +140,11 @@ class DisplayFovBoxSelection:
             height_arcsec=float(fov.height_arcsec),
             z_min_mm=float(z_min_mm),
             z_max_mm=float(z_max_mm),
+            observer_key=str(observer_key or "earth"),
         )
 
     def as_observer_metadata(self, *, square: bool = False) -> dict[str, float | str | bool]:
-        return {
+        meta: dict[str, Any] = {
             "frame": "observer_heliocentric",
             "xc_arcsec": float(self.center_x_arcsec),
             "yc_arcsec": float(self.center_y_arcsec),
@@ -136,7 +153,9 @@ class DisplayFovBoxSelection:
             "zmin_mm": float(self.z_min_mm),
             "zmax_mm": float(self.z_max_mm),
             "square": bool(square),
+            "observer_key": str(self.observer_key or "earth"),
         }
+        return meta
 
 
 @dataclass(slots=True)

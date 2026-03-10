@@ -1,11 +1,14 @@
 import shlex
 import shutil
 import sys
+import os
+import signal
 import re
 import ast
 import io
 import contextlib
 import datetime as dt
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
@@ -17,7 +20,11 @@ from astropy.coordinates import SkyCoord
 from astropy.time import Time
 from astropy.io import fits
 from pyAMaFiL.mag_field_lin_fff import MagFieldLinFFF
-from pyAMaFiL.mag_field_proc import MagFieldProcessor
+from pyAMaFiL.mag_field_proc import (
+    MagFieldProcessor,
+    mfp_util_invert_index_array,
+    mfp_util_transpose_index,
+)
 from scipy.io import readsav
 from sunpy.coordinates import (Heliocentric, HeliographicCarrington, HeliographicStonyhurst,
                                Helioprojective, get_earth)
@@ -35,8 +42,15 @@ from pyampp.gxbox.boxutils import (
     write_b3d_h5,
     compute_vertical_current,
     load_sunpy_map_compat,
+    normalize_observer_metadata,
+    remap_vertical_current_inputs,
 )
 from pyampp.gxbox.gx_box2id import gx_box2id
+from pyampp.gxbox.observer_restore import (
+    build_pb0r_metadata_from_ephemeris,
+    normalize_observer_key,
+    resolve_named_observer,
+)
 from pyampp.util.config import DOWNLOAD_DIR, GXMODEL_DIR, AIA_EUV_PASSBANDS, AIA_UV_PASSBANDS
 
 
@@ -57,6 +71,8 @@ class Fov2BoxConfig:
     pad_frac: float
     data_dir: str
     gxmodel_dir: str
+    download_backend: str
+    force_download: bool
     entry_box: Optional[str]
     save_empty_box: bool
     save_potential: bool
@@ -571,6 +587,76 @@ def _lines_quiet(maglib: Any, **kwargs: Any) -> Dict[str, Any]:
         return maglib.lines(**kwargs)
 
 
+def _lines_fast(maglib: Any, **kwargs: Any) -> Dict[str, Any]:
+    """
+    Call the pyAMaFiL line tracer without the unconditional ``print(res)``
+    performed by ``MagFieldProcessor.lines()``.
+    """
+    reduce_passed = kwargs.get("reduce_passed")
+    chromo_level = kwargs.get("chromo_level", 1)
+    seeds = kwargs.get("seeds")
+    max_length = kwargs.get("max_length", 0)
+    step = kwargs.get("step", 1.0)
+    tolerance = kwargs.get("tolerance", 1e-3)
+    tolerance_bound = kwargs.get("tolerance_bound", 1e-3)
+    n_processes = kwargs.get("n_processes", 0)
+    debug_input = kwargs.get("debug_input", False)
+
+    bx = getattr(maglib, "_MagFieldProcessor__bx", None)
+    by = getattr(maglib, "_MagFieldProcessor__by", None)
+    bz = getattr(maglib, "_MagFieldProcessor__bz", None)
+    if bx is None or by is None or bz is None:
+        return maglib.lines(**kwargs)
+
+    res = maglib.lines_wrapper(
+        bx,
+        by,
+        bz,
+        reduce_passed,
+        chromo_level,
+        seeds,
+        max_length,
+        step,
+        tolerance,
+        tolerance_bound,
+        n_processes,
+        debug_input,
+    )
+
+    shape_zyx = np.flip(bx.shape)
+    transpose = seeds is None
+    res["voxel_status"] = mfp_util_transpose_index(res["voxel_status"], shape_zyx, transpose)
+    res["phys_length"] = mfp_util_transpose_index(res["phys_length"], shape_zyx, transpose)
+    res["av_field"] = mfp_util_transpose_index(res["av_field"], shape_zyx, transpose)
+    res["codes"] = mfp_util_transpose_index(res["codes"], shape_zyx, transpose)
+    res["apex_idx"] = mfp_util_transpose_index(mfp_util_invert_index_array(res["apex_idx"], shape_zyx), shape_zyx, transpose)
+    res["start_idx"] = mfp_util_transpose_index(mfp_util_invert_index_array(res["start_idx"], shape_zyx), shape_zyx, transpose)
+    res["end_idx"] = mfp_util_transpose_index(mfp_util_invert_index_array(res["end_idx"], shape_zyx), shape_zyx, transpose)
+    res["seed_idx"] = mfp_util_transpose_index(mfp_util_invert_index_array(res["seed_idx"], shape_zyx), shape_zyx, transpose)
+
+    if res.get("coords") is not None:
+        res["coords"] = res["coords"][:, [1, 0, 2, 3]]
+
+    return res
+
+
+def _load_maglib_idl_cube(maglib: Any, box: Dict[str, Any], dr: Any = 0.001 * u.solRad) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Load cube components into ``MagFieldProcessor`` in the same boundary layout
+    captured from the IDL ``mfoLines`` call:
+
+    - internal box arrays are normalized to ``(x, y, z)``
+    - DLL input arrays are ``(z, x, y)``
+    - ``bx``/``by`` are swapped relative to the raw box field names
+    """
+    bx = np.asarray(box["by"]).transpose(2, 0, 1)
+    by = np.asarray(box["bx"]).transpose(2, 0, 1)
+    bz = np.asarray(box["bz"]).transpose(2, 0, 1)
+    load_vars = getattr(maglib, "_MagFieldProcessor__load_vars")
+    load_vars(bx, by, bz, dr)
+    return bx, by, bz
+
+
 def _decode_id_text(v: Any) -> str:
     if hasattr(v, "item"):
         try:
@@ -698,6 +784,10 @@ def _build_execute_cmd(cfg: Fov2BoxConfig) -> str:
     cmd += ["--pad-frac", f"{cfg.pad_frac:.4f}"]
     cmd += ["--data-dir", cfg.data_dir]
     cmd += ["--gxmodel-dir", cfg.gxmodel_dir]
+    if str(cfg.download_backend or "drms").lower() == "fido":
+        cmd.append("--use-fido")
+    if cfg.force_download:
+        cmd.append("--force-download")
     if cfg.euv:
         cmd.append("--euv")
     if cfg.uv:
@@ -785,29 +875,64 @@ def _explicit_observer_fov(cfg: Fov2BoxConfig) -> Optional[dict[str, Any]]:
 
 def _observer_metadata_from_source_map(source_map: Optional[Map], cfg: Fov2BoxConfig) -> dict[str, Any]:
     observer_meta: dict[str, Any] = {"name": str(cfg.observer_name or "earth")}
+    observer_meta["label"] = {
+        "earth": "Earth",
+        "sdo": "SDO",
+        "solar orbiter": "Solar Orbiter",
+        "stereo-a": "STEREO-A",
+        "stereo-b": "STEREO-B",
+        "custom": "Custom",
+    }.get(normalize_observer_key(cfg.observer_name), "Earth")
     explicit_fov = _explicit_observer_fov(cfg)
     if explicit_fov is not None:
         observer_meta["fov"] = explicit_fov
     ephemeris: dict[str, Any] = {}
     if source_map is not None:
-        obs = getattr(source_map, "observer_coordinate", None)
+        source_date = getattr(source_map, "date", None)
+        try:
+            if source_date is not None:
+                ephemeris["obs_date"] = Time(source_date).isot
+        except Exception:
+            pass
+        obs = _resolve_cli_observer(source_map, cfg.observer_name, Time(source_date) if source_date is not None else None)
         if obs is not None:
             try:
-                obs_hgs = obs.transform_to(HeliographicStonyhurst(obstime=source_map.date))
-                ephemeris["b0_deg"] = float(obs_hgs.lat.to_value(u.deg))
+                obs_hgs = obs.transform_to(HeliographicStonyhurst(obstime=source_date))
+                ephemeris["hgln_obs_deg"] = float(obs_hgs.lon.to_value(u.deg))
+                ephemeris["hglt_obs_deg"] = float(obs_hgs.lat.to_value(u.deg))
             except Exception:
                 pass
+        meta = getattr(source_map, "meta", None)
+        if meta is not None and normalize_observer_key(cfg.observer_name) == "sdo":
             try:
-                obs_hgc = obs.transform_to(HeliographicCarrington(observer="earth", obstime=source_map.date))
-                ephemeris["l0_deg"] = float(obs_hgc.lon.to_value(u.deg))
+                if "HGLN_OBS" in meta and "hgln_obs_deg" not in ephemeris:
+                    ephemeris["hgln_obs_deg"] = float(meta["HGLN_OBS"])
+                if "HGLT_OBS" in meta and "hglt_obs_deg" not in ephemeris:
+                    ephemeris["hglt_obs_deg"] = float(meta["HGLT_OBS"])
+                if "DSUN_OBS" in meta and "dsun_cm" not in ephemeris:
+                    ephemeris["dsun_cm"] = float(u.Quantity(meta["DSUN_OBS"], u.m).to_value(u.cm))
+                if "RSUN_REF" in meta and "rsun_cm" not in ephemeris:
+                    ephemeris["rsun_cm"] = float(u.Quantity(meta["RSUN_REF"], u.m).to_value(u.cm))
             except Exception:
                 pass
         if hasattr(source_map, "rsun_meters") and source_map.rsun_meters is not None:
             ephemeris["rsun_cm"] = float(u.Quantity(source_map.rsun_meters).to_value(u.cm))
-        if hasattr(source_map, "dsun") and source_map.dsun is not None:
+        if obs is not None:
+            try:
+                ephemeris["dsun_cm"] = float(u.Quantity(obs.radius).to_value(u.cm))
+            except Exception:
+                pass
+        elif hasattr(source_map, "dsun") and source_map.dsun is not None:
             ephemeris["dsun_cm"] = float(u.Quantity(source_map.dsun).to_value(u.cm))
     if ephemeris:
         observer_meta["ephemeris"] = ephemeris
+        pb0r = build_pb0r_metadata_from_ephemeris(
+            ephemeris,
+            observer_key=observer_meta.get("name"),
+            obs_time=ephemeris.get("obs_date"),
+        )
+        if pb0r:
+            observer_meta["pb0r"] = pb0r
     return observer_meta
 
 
@@ -817,6 +942,14 @@ def _observer_metadata_from_entry(entry_loaded: Optional[Dict[str, Any]], cfg: F
     base_observer = entry_loaded.get("observer", {})
     observer_meta: dict[str, Any] = dict(base_observer) if isinstance(base_observer, dict) else {}
     observer_meta["name"] = str(cfg.observer_name or observer_meta.get("name") or "earth")
+    observer_meta["label"] = str(observer_meta.get("label") or {
+        "earth": "Earth",
+        "sdo": "SDO",
+        "solar orbiter": "Solar Orbiter",
+        "stereo-a": "STEREO-A",
+        "stereo-b": "STEREO-B",
+        "custom": "Custom",
+    }.get(normalize_observer_key(observer_meta.get("name")), "Earth"))
     explicit_fov = _explicit_observer_fov(cfg)
     if explicit_fov is not None:
         observer_meta["fov"] = explicit_fov
@@ -829,12 +962,10 @@ def _observer_metadata_from_entry(entry_loaded: Optional[Dict[str, Any]], cfg: F
         if index_text:
             try:
                 header = fits.Header.fromstring(_decode_id_text(index_text), sep="\n")
-                if "SOLAR_B0" in header:
-                    ephemeris["b0_deg"] = float(header["SOLAR_B0"])
-                if "CRLN_OBS" in header:
-                    ephemeris["l0_deg"] = float(header["CRLN_OBS"])
-                elif "HGLN_OBS" in header:
-                    ephemeris["l0_deg"] = float(header["HGLN_OBS"])
+                if "HGLN_OBS" in header:
+                    ephemeris["hgln_obs_deg"] = float(header["HGLN_OBS"])
+                if "HGLT_OBS" in header:
+                    ephemeris["hglt_obs_deg"] = float(header["HGLT_OBS"])
                 if "RSUN_REF" in header:
                     ephemeris["rsun_cm"] = float(u.Quantity(header["RSUN_REF"], u.m).to_value(u.cm))
                 if "DSUN_OBS" in header:
@@ -842,11 +973,68 @@ def _observer_metadata_from_entry(entry_loaded: Optional[Dict[str, Any]], cfg: F
             except Exception:
                 pass
     if ephemeris:
+        ephemeris = {
+            key: ephemeris[key]
+            for key in ("obs_date", "hgln_obs_deg", "hglt_obs_deg", "dsun_cm", "rsun_cm")
+            if key in ephemeris
+        }
+    if ephemeris:
         observer_meta["ephemeris"] = ephemeris
+        pb0r = build_pb0r_metadata_from_ephemeris(
+            ephemeris,
+            observer_key=observer_meta.get("name"),
+            obs_time=ephemeris.get("obs_date"),
+        )
+        if pb0r:
+            observer_meta["pb0r"] = pb0r
     return observer_meta or None
 
 
-def _build_index_header(bottom_wcs_header, source_map: Map) -> str:
+def _merge_observer_metadata(
+    base_observer: Optional[dict[str, Any]],
+    stage_observer: Optional[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    merged: dict[str, Any] = {}
+    if isinstance(base_observer, dict):
+        merged.update(base_observer)
+    if isinstance(stage_observer, dict):
+        for key, value in stage_observer.items():
+            if key == "ephemeris" and isinstance(value, dict):
+                ephemeris = dict(merged.get("ephemeris", {})) if isinstance(merged.get("ephemeris"), dict) else {}
+                ephemeris.update(value)
+                merged["ephemeris"] = ephemeris
+            elif key in ("fov", "fov_box", "pb0r") and isinstance(value, dict):
+                merged[key] = dict(value)
+            else:
+                merged[key] = value
+    return merged or None
+
+
+def _resolve_cli_observer(source_map: Optional[Map], observer_name: str, obs_time: Optional[Time]):
+    if obs_time is None:
+        return getattr(source_map, "observer_coordinate", None)
+    key = normalize_observer_key(observer_name)
+    if key == "earth":
+        return get_earth(obs_time)
+    if key == "sdo":
+        if source_map is not None and getattr(source_map, "observer_coordinate", None) is not None:
+            try:
+                return source_map.observer_coordinate.transform_to(HeliographicStonyhurst(obstime=obs_time))
+            except Exception:
+                return source_map.observer_coordinate
+        return get_earth(obs_time)
+    coord = resolve_named_observer(key, obs_time)
+    return coord if coord is not None else get_earth(obs_time)
+
+
+def _build_index_header(
+    bottom_wcs_header,
+    source_map,
+    *,
+    observer_override: Any = None,
+    obs_time_override: Any = None,
+    rsun_override: Any = None,
+) -> str:
     """
     Build an IDL-GX compatible INDEX-like FITS header string.
 
@@ -868,8 +1056,9 @@ def _build_index_header(bottom_wcs_header, source_map: Map) -> str:
     header["BITPIX"] = int(header.get("BITPIX", 8))
     header["NAXIS"] = int(header.get("NAXIS", 2))
 
-    if source_map is not None:
-        date_obs = source_map.date.isot if source_map.date is not None else None
+    if source_map is not None or obs_time_override is not None:
+        date_value = source_map.date if source_map is not None and source_map.date is not None else obs_time_override
+        date_obs = date_value.isot if date_value is not None else None
         if date_obs:
             header["DATE-OBS"] = date_obs
             header["DATE_OBS"] = date_obs
@@ -877,17 +1066,21 @@ def _build_index_header(bottom_wcs_header, source_map: Map) -> str:
         elif "DATE-OBS" in header and "DATE_OBS" not in header:
             header["DATE_OBS"] = header["DATE-OBS"]
 
-        if hasattr(source_map, "dsun") and source_map.dsun is not None:
+        if observer_override is not None and getattr(observer_override, "radius", None) is not None:
+            header["DSUN_OBS"] = float(u.Quantity(observer_override.radius).to_value(u.m))
+        elif source_map is not None and hasattr(source_map, "dsun") and source_map.dsun is not None:
             header["DSUN_OBS"] = float(source_map.dsun.to_value(u.m))
 
-        obs = source_map.observer_coordinate
+        obs = observer_override if observer_override is not None else (
+            source_map.observer_coordinate if source_map is not None else None
+        )
         if obs is not None:
-            obs_hgs = obs.transform_to(HeliographicStonyhurst(obstime=source_map.date))
+            obs_hgs = obs.transform_to(HeliographicStonyhurst(obstime=date_value))
             header["HGLN_OBS"] = float(obs_hgs.lon.to_value(u.deg))
             header["HGLT_OBS"] = float(obs_hgs.lat.to_value(u.deg))
             header["SOLAR_B0"] = float(obs_hgs.lat.to_value(u.deg))
             try:
-                obs_hgc = obs.transform_to(HeliographicCarrington(observer="earth", obstime=source_map.date))
+                obs_hgc = obs.transform_to(HeliographicCarrington(observer="earth", obstime=date_value))
                 header["CRLN_OBS"] = float(obs_hgc.lon.to_value(u.deg))
                 header["CRLT_OBS"] = float(obs_hgc.lat.to_value(u.deg))
             except Exception:
@@ -897,15 +1090,18 @@ def _build_index_header(bottom_wcs_header, source_map: Map) -> str:
                 # keep header generation robust and proceed with available keys.
                 pass
 
-        if getattr(source_map, "rsun_meters", None) is not None:
+        if rsun_override is not None:
+            header["RSUN_REF"] = float(u.Quantity(rsun_override).to_value(u.m))
+        elif source_map is not None and getattr(source_map, "rsun_meters", None) is not None:
             header["RSUN_REF"] = float(source_map.rsun_meters.to_value(u.m))
 
-        tel = source_map.meta.get("telescop")
-        if tel:
-            header["TELESCOP"] = str(tel)
-        instr = source_map.meta.get("instrume")
-        if instr:
-            header["INSTRUME"] = str(instr)
+        if source_map is not None:
+            tel = source_map.meta.get("telescop")
+            if tel:
+                header["TELESCOP"] = str(tel)
+            instr = source_map.meta.get("instrume")
+            if instr:
+                header["INSTRUME"] = str(instr)
         if "WCSNAME" not in header:
             header["WCSNAME"] = "Carrington-Heliographic"
 
@@ -914,6 +1110,7 @@ def _build_index_header(bottom_wcs_header, source_map: Map) -> str:
 
 def _print_info(cfg: Fov2BoxConfig) -> None:
     resolved_reduce_passed = cfg.reduce_passed if cfg.reduce_passed is not None else (0 if cfg.center_vox else 1)
+    resolved_chromo_level = (1000.0 / float(cfg.dx_km)) if cfg.dx_km else 1.0
     import pyampp
     import sunpy
 
@@ -935,6 +1132,8 @@ def _print_info(cfg: Fov2BoxConfig) -> None:
         ("pad_frac", cfg.pad_frac, "Padding fraction used for context map FOV"),
         ("data_dir", cfg.data_dir, "SDO download/cache directory"),
         ("gxmodel_dir", cfg.gxmodel_dir, "Output gx_models directory"),
+        ("download_backend", cfg.download_backend, "SDO downloader backend"),
+        ("force_download", cfg.force_download, "Bypass local cache hits and redownload requested SDO products"),
         ("entry_box", cfg.entry_box, "Path to precomputed HDF5 box"),
         ("save_empty_box", cfg.save_empty_box, "Save NONE stage"),
         ("save_potential", cfg.save_potential, "Save POT stage"),
@@ -952,6 +1151,7 @@ def _print_info(cfg: Fov2BoxConfig) -> None:
         ("center_vox", cfg.center_vox, "Compute lines only through voxel centers (sets reduce_passed=0 unless overridden)"),
         ("reduce_passed", cfg.reduce_passed, "Expert override: 0|1|2|3 (takes precedence over --center-vox)"),
         ("reduce_passed_resolved", resolved_reduce_passed, "Effective line-reduction mode used by tracer"),
+        ("chromo_level_resolved", resolved_chromo_level, "Effective chromo level passed to line tracer (1 Mm / dx_km)"),
         ("euv", cfg.euv, "Download AIA EUV context maps"),
         ("uv", cfg.uv, "Download AIA UV context maps"),
         ("sfq", cfg.sfq, "Use SFQ disambiguation (method=0)"),
@@ -987,12 +1187,22 @@ def _load_hmi_maps_from_downloader(
     data_dir: Path,
     euv: bool,
     uv: bool,
+    download_backend: str = "drms",
+    force_download: bool = False,
     disambig_method: int = 2,
     strict_required: bool = True,
 ) -> tuple[Dict[str, Map], dict]:
     import time as time_mod
 
-    downloader = SDOImageDownloader(time, data_dir=str(data_dir), euv=euv, uv=uv, hmi=True)
+    downloader = SDOImageDownloader(
+        time,
+        data_dir=str(data_dir),
+        euv=euv,
+        uv=uv,
+        hmi=True,
+        backend=download_backend,
+        force_download=force_download,
+    )
     missing_before = []
     if downloader.existence_report:
         for category in ("hmi_b", "hmi_m", "hmi_ic"):
@@ -1001,13 +1211,19 @@ def _load_hmi_maps_from_downloader(
     t0 = time_mod.perf_counter()
     files = downloader.download_images()
     elapsed = time_mod.perf_counter() - t0
-    downloaded = len(missing_before) > 0
+    downloaded = force_download or len(missing_before) > 0
     required = ["field", "inclination", "azimuth", "disambig", "continuum", "magnetogram"]
     missing = [k for k in required if not files.get(k)]
     if missing and strict_required:
         raise RuntimeError(f"Missing required HMI files: {missing}")
-    if missing and not strict_required:
-        info = {"downloaded": downloaded, "elapsed": elapsed, "missing_before": missing_before, "missing_after": missing, "files": files}
+    if not strict_required:
+        info = {
+            "downloaded": downloaded,
+            "elapsed": elapsed,
+            "missing_before": missing_before,
+            "missing_after": missing,
+            "files": files,
+        }
         return {}, info
 
     map_field = load_sunpy_map_compat(files["field"])
@@ -1301,7 +1517,7 @@ def _load_entry_box_any(entry_path: Path) -> Dict[str, Any]:
     sid = _decode_sav_value(box["ID"]) if "ID" in names else entry_path.stem
     execute = _decode_sav_value(box["EXECUTE"]) if "EXECUTE" in names else ""
     out["metadata"] = {"id": sid, "execute": execute}
-    return out
+    return normalize_observer_metadata(out)
 
 
 def _resolve_box_params(cfg: Fov2BoxConfig) -> Tuple[Time, Tuple[int, int, int], float]:
@@ -1353,6 +1569,9 @@ def main(
     pad_frac: float = typer.Option(0.10, "--pad-frac", help="Padding fraction for FOV"),
     data_dir: str = typer.Option(DOWNLOAD_DIR, "--data-dir", help="SDO data directory"),
     gxmodel_dir: str = typer.Option(GXMODEL_DIR, "--gxmodel-dir", help="GX model output directory"),
+    download_backend: Optional[str] = typer.Option(None, "--download-backend", help="Compatibility override: explicitly set downloader backend to fido or drms"),
+    use_fido: bool = typer.Option(False, "--use-fido", help="Use the legacy SunPy/Fido downloader instead of the default DRMS backend"),
+    force_download: bool = typer.Option(False, "--force-download", help="Bypass local cache hits and redownload requested SDO products"),
     entry_box: Optional[str] = typer.Option(None, "--entry-box", help="Existing HDF5/SAV box"),
     save_empty_box: bool = typer.Option(False, "--save-empty-box", help="Save NONE stage"),
     save_potential: bool = typer.Option(False, "--save-potential", help="Save POT stage"),
@@ -1407,6 +1626,8 @@ def main(
         pad_frac=pad_frac,
         data_dir=data_dir,
         gxmodel_dir=gxmodel_dir,
+        download_backend=download_backend or "drms",
+        force_download=force_download,
         entry_box=entry_box,
         save_empty_box=save_empty_box,
         save_potential=save_potential,
@@ -1442,6 +1663,14 @@ def main(
         clone_only=clone_only,
         info=info,
     )
+
+    cfg.download_backend = str(cfg.download_backend or "drms").strip().lower()
+    if cfg.download_backend not in {"fido", "drms"}:
+        raise ValueError("Unsupported --download-backend. Expected 'fido' or 'drms'.")
+    if use_fido:
+        if download_backend is not None and cfg.download_backend != "fido":
+            raise ValueError("Conflicting downloader controls: --use-fido and --download-backend drms.")
+        cfg.download_backend = "fido"
 
     if not any([cfg.hpc, cfg.hgc, cfg.hgs]):
         cfg.hpc = True
@@ -1617,6 +1846,87 @@ def main(
     base = None
     dr3 = None
 
+    def _start_progress_emitter(label: str, start: float):
+        isatty = bool(getattr(sys.stdout, "isatty", lambda: False)())
+        if hasattr(os, "fork"):
+            pid = os.fork()
+            if pid == 0:
+                frames = "|/-\\"
+                idx = 0
+                last_heartbeat = 0.0
+                try:
+                    while True:
+                        elapsed = time_mod.perf_counter() - start
+                        frame = frames[idx % len(frames)]
+                        if isatty:
+                            print(f"\r{label}... {frame}", end="", flush=True)
+                        elif elapsed - last_heartbeat >= 5.0:
+                            print(f"{label}... {elapsed:.1f}s elapsed", flush=True)
+                            last_heartbeat = elapsed
+                        idx += 1
+                        time_mod.sleep(0.15)
+                finally:
+                    os._exit(0)
+            return pid, isatty, None
+        stop_event = threading.Event()
+
+        def _heartbeat():
+            frames = "|/-\\"
+            idx = 0
+            last_heartbeat = 0.0
+            while not stop_event.wait(0.15):
+                elapsed = time_mod.perf_counter() - start
+                frame = frames[idx % len(frames)]
+                if isatty:
+                    print(f"\r{label}... {frame}", end="", flush=True)
+                elif elapsed - last_heartbeat >= 5.0:
+                    print(f"{label}... {elapsed:.1f}s elapsed")
+                    last_heartbeat = elapsed
+                idx += 1
+
+        thread = threading.Thread(target=_heartbeat, daemon=True)
+        thread.start()
+        return None, isatty, (stop_event, thread)
+
+    def _stop_progress_emitter(pid, thread_state):
+        if pid is not None:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+            return
+        if thread_state is not None:
+            stop_event, thread = thread_state
+            stop_event.set()
+            thread.join(timeout=0.3)
+
+    def _run_logged_step(label: str, func):
+        start = time_mod.perf_counter()
+        print(f"{label}...")
+        pid, isatty, thread_state = _start_progress_emitter(label, start)
+        try:
+            result = func()
+        except Exception:
+            elapsed = time_mod.perf_counter() - start
+            _stop_progress_emitter(pid, thread_state)
+            if isatty:
+                print(f"\r{label}... failed after {elapsed:.2f}s")
+            else:
+                print(f"{label} failed after {elapsed:.2f}s")
+            raise
+
+        elapsed = time_mod.perf_counter() - start
+        _stop_progress_emitter(pid, thread_state)
+        if isatty:
+            print(f"\r{label}... done in {elapsed:.2f}s")
+        else:
+            print(f"{label} done in {elapsed:.2f}s")
+        return result
+
     if resume_mode:
         assert entry_loaded is not None
         base_group = dict(entry_loaded.get("base", {}))
@@ -1648,8 +1958,6 @@ def main(
         if not base:
             base = Path(cfg.entry_box).stem if cfg.entry_box else _stage_file_base(obs_time, "UNKNOWN", projection_tag=projection_tag)
     else:
-        observer = get_earth(obs_time)
-
         data_dir_path = Path(cfg.data_dir).expanduser().resolve()
         disambig_method = 0 if cfg.sfq else 2
         print("Checking/downloading HMI/AIA data...")
@@ -1659,6 +1967,8 @@ def main(
             data_dir_path,
             cfg.euv,
             cfg.uv,
+            download_backend=cfg.download_backend,
+            force_download=cfg.force_download,
             disambig_method=disambig_method,
             strict_required=(_last_stage_tag(cfg.stop_after) != "DL"),
         )
@@ -1670,76 +1980,123 @@ def main(
             print(f"Total elapsed: {total:.2f}s")
             return
 
-        rsun = u.Quantity(maps["field"].rsun_meters, u.m).to(u.km)
+        def _prepare_geometry():
+            rsun_local = u.Quantity(maps["field"].rsun_meters, u.m).to(u.km)
+            observer_local = _resolve_cli_observer(maps.get("field"), cfg.observer_name, obs_time)
 
-        if cfg.hpc:
-            box_origin = SkyCoord(cfg.coords[0] * u.arcsec, cfg.coords[1] * u.arcsec,
-                                  obstime=obs_time, observer=observer, rsun=rsun, frame=Helioprojective)
-        elif cfg.hgc:
-            box_origin = SkyCoord(lon=cfg.coords[0] * u.deg, lat=cfg.coords[1] * u.deg,
-                                  radius=rsun, obstime=obs_time, observer=observer,
-                                  frame=HeliographicCarrington)
-        else:
-            box_origin = SkyCoord(lon=cfg.coords[0] * u.deg, lat=cfg.coords[1] * u.deg,
-                                  radius=rsun, obstime=obs_time, observer=observer,
-                                  frame=HeliographicStonyhurst)
+            if cfg.hpc:
+                box_origin_local = SkyCoord(cfg.coords[0] * u.arcsec, cfg.coords[1] * u.arcsec,
+                                            obstime=obs_time, observer=observer_local, rsun=rsun_local,
+                                            frame=Helioprojective)
+            elif cfg.hgc:
+                box_origin_local = SkyCoord(lon=cfg.coords[0] * u.deg, lat=cfg.coords[1] * u.deg,
+                                            radius=rsun_local, obstime=obs_time, observer=observer_local,
+                                            frame=HeliographicCarrington)
+            else:
+                box_origin_local = SkyCoord(lon=cfg.coords[0] * u.deg, lat=cfg.coords[1] * u.deg,
+                                            radius=rsun_local, obstime=obs_time, observer=observer_local,
+                                            frame=HeliographicStonyhurst)
 
-        box_dims_q = u.Quantity(list(box_dims_resolved)) * u.pix
-        box_res = (cfg.dx_km * u.km).to(u.Mm)
+            box_dims_q_local = u.Quantity(list(box_dims_resolved)) * u.pix
+            box_res_local = (cfg.dx_km * u.km).to(u.Mm)
 
-        frame_obs = Helioprojective(observer=observer, obstime=obs_time, rsun=rsun)
-        frame_hcc = Heliocentric(observer=box_origin, obstime=obs_time)
-        box_center = box_origin.transform_to(frame_hcc)
-        center_z = box_center.z + (box_dims_q[2] / u.pix * box_res) / 2
-        box_center = SkyCoord(x=box_center.x, y=box_center.y, z=center_z, frame=frame_hcc)
+            frame_obs_local = Helioprojective(observer=observer_local, obstime=obs_time, rsun=rsun_local)
+            frame_hcc_local = Heliocentric(observer=box_origin_local, obstime=obs_time)
+            box_center_local = box_origin_local.transform_to(frame_hcc_local)
+            center_z_local = box_center_local.z + (box_dims_q_local[2] / u.pix * box_res_local) / 2
+            box_center_local = SkyCoord(x=box_center_local.x, y=box_center_local.y, z=center_z_local,
+                                        frame=frame_hcc_local)
 
-        box = Box(frame_obs, box_origin, box_center, box_dims_q, box_res)
-        if cfg.top:
-            bottom_wcs_header = box.bottom_top_header(dsun_obs=maps["field"].dsun)
-            projection_tag = "TOP"
-        else:
-            bottom_wcs_header = box.bottom_cea_header
-            projection_tag = "CEA"
-        fov_coords = box.bounds_coords_bl_tr(pad_frac=cfg.pad_frac)
+            box_local = Box(frame_obs_local, box_origin_local, box_center_local, box_dims_q_local, box_res_local)
+            if cfg.top:
+                bottom_wcs_header_local = box_local.bottom_top_header(dsun_obs=maps["field"].dsun)
+                projection_tag_local = "TOP"
+            else:
+                bottom_wcs_header_local = box_local.bottom_cea_header
+                projection_tag_local = "CEA"
+            fov_coords_local = box_local.bounds_coords_bl_tr(pad_frac=cfg.pad_frac)
+            return (
+                rsun_local, observer_local, box_origin_local, box_dims_q_local, box_res_local,
+                frame_obs_local, frame_hcc_local, box_center_local, box_local,
+                bottom_wcs_header_local, projection_tag_local, fov_coords_local,
+            )
 
-        map_bp, map_bt, map_br = hmi_b2ptr(maps["field"], maps["inclination"], maps["azimuth"])
+        (
+            rsun, observer, box_origin, box_dims_q, box_res,
+            frame_obs, frame_hcc, box_center, box,
+            bottom_wcs_header, projection_tag, fov_coords,
+        ) = _run_logged_step("Preparing observer and box geometry", _prepare_geometry)
+
+        map_bp, map_bt, map_br = _run_logged_step(
+            "Converting HMI vector field components",
+            lambda: hmi_b2ptr(maps["field"], maps["inclination"], maps["azimuth"]),
+        )
 
         def submap_with_fov(_map: Map) -> Map:
             bl = fov_coords[0].transform_to(_map.coordinate_frame)
             tr = fov_coords[1].transform_to(_map.coordinate_frame)
             return _map.submap(bl, top_right=tr)
 
-        map_bp = submap_with_fov(map_bp)
-        map_bt = submap_with_fov(map_bt)
-        map_br = submap_with_fov(map_br)
-        map_cont = submap_with_fov(maps["continuum"])
-        map_los = submap_with_fov(maps["magnetogram"])
+        def _extract_cutouts():
+            return (
+                submap_with_fov(map_bp),
+                submap_with_fov(map_bt),
+                submap_with_fov(map_br),
+                submap_with_fov(maps["continuum"]),
+                submap_with_fov(maps["magnetogram"]),
+            )
+
+        map_bp, map_bt, map_br, map_cont, map_los = _run_logged_step(
+            "Extracting FOV cutouts from source maps",
+            _extract_cutouts,
+        )
 
         # Match GX/IDL base convention: bx := bp, by := -bt, bz := br.
         map_bx = map_bp
         map_by = Map(-map_bt.data, map_bt.meta)
         map_bz = map_br
 
-        bottom_bx = map_bx.reproject_to(bottom_wcs_header, algorithm="exact")
-        bottom_by = map_by.reproject_to(bottom_wcs_header, algorithm="exact")
-        bottom_bz = map_bz.reproject_to(bottom_wcs_header, algorithm="exact")
+        def _reproject_cutouts():
+            bottom_bx_local = map_bx.reproject_to(bottom_wcs_header, algorithm="exact")
+            bottom_by_local = map_by.reproject_to(bottom_wcs_header, algorithm="exact")
+            bottom_bz_local = map_bz.reproject_to(bottom_wcs_header, algorithm="exact")
+            base_bz_local = map_los.reproject_to(bottom_wcs_header, algorithm="exact")
+            base_ic_local = map_cont.reproject_to(bottom_wcs_header, algorithm="exact")
+            return (
+                bottom_bx_local,
+                bottom_by_local,
+                bottom_bz_local,
+                base_bz_local,
+                base_ic_local,
+                np.asarray(base_bz_local.data, dtype=float),
+                np.asarray(base_ic_local.data, dtype=float),
+                np.asarray(bottom_bz_local.data, dtype=float),
+            )
 
-        base_bz = map_los.reproject_to(bottom_wcs_header, algorithm="exact")
-        base_ic = map_cont.reproject_to(bottom_wcs_header, algorithm="exact")
-        base_bz_arr = np.asarray(base_bz.data, dtype=float)
-        base_ic_arr = np.asarray(base_ic.data, dtype=float)
-        bottom_bz_data = np.asarray(bottom_bz.data, dtype=float)
+        (
+            bottom_bx, bottom_by, bottom_bz, base_bz, base_ic,
+            base_bz_arr, base_ic_arr, bottom_bz_data,
+        ) = _run_logged_step("Reprojecting cutouts onto the model base grid", _reproject_cutouts)
 
-        index = _build_index_header(bottom_wcs_header, bottom_bz)
-        chromo_mask = decompose(base_bz_arr.T, base_ic_arr.T)
-        base_group = {
-            "bx": bottom_bx.data,
-            "by": bottom_by.data,
-            "bz": bottom_bz.data,
-            "ic": base_ic.data,
-            "chromo_mask": chromo_mask,
-            "index": index,
-        }
+        def _build_base_products():
+            index_local = _build_index_header(
+                bottom_wcs_header,
+                bottom_bz,
+                observer_override=observer,
+                obs_time_override=obs_time,
+                rsun_override=rsun,
+            )
+            chromo_mask_local = decompose(base_bz_arr.T, base_ic_arr.T)
+            return index_local, {
+                "bx": bottom_bx.data,
+                "by": bottom_by.data,
+                "bz": bottom_bz.data,
+                "ic": base_ic.data,
+                "chromo_mask": chromo_mask_local,
+                "index": index_local,
+            }
+
+        index, base_group = _run_logged_step("Building base-layer products", _build_base_products)
 
         refmaps = {}
         def add_refmap(ref_id: str, smap: Map) -> None:
@@ -1748,27 +2105,53 @@ def main(
             header = smap.wcs.to_header()
             refmaps[ref_id] = {"data": smap.data, "wcs_header": header.tostring(sep="\\n", endcard=True)}
 
-        add_refmap("Bz_reference", maps["magnetogram"])
-        add_refmap("Ic_reference", maps["continuum"])
+        def _collect_refmaps():
+            import time as time_mod
 
-        try:
-            vc_header = map_bx.wcs.to_header().tostring(sep="\\n", endcard=True)
-            rsun_arcsec = maps["magnetogram"].rsun_obs.to_value(u.arcsec)
-            crpix1, crpix2 = map_bx.wcs.wcs.crpix
-            cdelt1 = map_bx.scale.axis1.to_value(u.arcsec / u.pix)
-            cdelt2 = map_bx.scale.axis2.to_value(u.arcsec / u.pix)
-            jz = compute_vertical_current(map_bz.data, map_bx.data, map_by.data,
-                                          vc_header, rsun_arcsec,
-                                          crpix1=crpix1, crpix2=crpix2,
-                                          cdelt1_arcsec=cdelt1, cdelt2_arcsec=cdelt2)
-            refmaps["Vert_current"] = {"data": jz, "wcs_header": vc_header}
-        except Exception as exc:
-            vert_current_error = str(exc)
+            hmi_t0 = time_mod.perf_counter()
+            add_refmap("Bz_reference", maps["magnetogram"])
+            add_refmap("Ic_reference", maps["continuum"])
+            print(f"HMI references: 2/2 in {time_mod.perf_counter() - hmi_t0:.2f}s")
 
-        for pb in AIA_EUV_PASSBANDS + AIA_UV_PASSBANDS:
-            key = f"AIA_{pb}"
-            if key in maps:
+            local_vert_current_error = None
+            def _compute_vert_current():
+                vc_bx_local, vc_by_local, vc_bz_local = remap_vertical_current_inputs(
+                    map_bx, map_by, map_bz
+                )
+                vc_header_local = vc_bx_local.wcs.to_header().tostring(sep="\\n", endcard=True)
+                rsun_arcsec_local = vc_bx_local.rsun_obs.to_value(u.arcsec)
+                crpix1_local, crpix2_local = vc_bx_local.wcs.wcs.crpix
+                cdelt1_local = vc_bx_local.scale.axis1.to_value(u.arcsec / u.pix)
+                cdelt2_local = vc_bx_local.scale.axis2.to_value(u.arcsec / u.pix)
+                jz_local = compute_vertical_current(
+                    vc_bz_local.data,
+                    vc_bx_local.data,
+                    vc_by_local.data,
+                    vc_header_local,
+                    rsun_arcsec_local,
+                    crpix1=crpix1_local,
+                    crpix2=crpix2_local,
+                    cdelt1_arcsec=cdelt1_local,
+                    cdelt2_arcsec=cdelt2_local,
+                )
+                refmaps["Vert_current"] = {"data": jz_local, "wcs_header": vc_header_local}
+            try:
+                _run_logged_step("Vertical current", _compute_vert_current)
+            except Exception as exc:
+                local_vert_current_error = str(exc)
+                print(f"Vertical current: skipped ({local_vert_current_error})")
+
+            aia_passbands = [pb for pb in (AIA_EUV_PASSBANDS + AIA_UV_PASSBANDS) if f"AIA_{pb}" in maps]
+            total_aia = len(aia_passbands)
+            aia_t0 = time_mod.perf_counter()
+            for idx, pb in enumerate(aia_passbands, start=1):
+                key = f"AIA_{pb}"
                 add_refmap(key, maps[key])
+                elapsed = time_mod.perf_counter() - aia_t0
+                print(f"AIA references: {idx}/{total_aia} ({pb}) in {elapsed:.2f}s")
+            return local_vert_current_error
+
+        vert_current_error = _run_logged_step("Collecting reference maps and derived products", _collect_refmaps)
 
         obs_dr = (cfg.dx_km * u.km) / rsun
         dr3 = np.array([obs_dr.value, obs_dr.value, obs_dr.value])
@@ -1801,6 +2184,41 @@ def main(
 
     produced = []
     stage_times = {}
+
+    class _StageProgress:
+        def __init__(self, label: str):
+            self.label = label
+            self._start = None
+            self._stop_event = threading.Event()
+            self._thread = None
+            self._isatty = bool(getattr(sys.stdout, "isatty", lambda: False)())
+            self._finished = False
+
+        def __enter__(self):
+            self._start = time_mod.perf_counter()
+            print(f"{self.label}...")
+            self._pid, self._isatty, self._thread_state = _start_progress_emitter(self.label, self._start)
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            if exc_type is not None and not self._finished:
+                elapsed = time_mod.perf_counter() - (self._start or time_mod.perf_counter())
+                _stop_progress_emitter(getattr(self, "_pid", None), getattr(self, "_thread_state", None))
+                if self._isatty:
+                    print(f"\r{self.label}... failed after {elapsed:.2f}s")
+                else:
+                    print(f"{self.label} failed after {elapsed:.2f}s")
+            return False
+
+        def finish(self) -> float:
+            elapsed = time_mod.perf_counter() - (self._start or time_mod.perf_counter())
+            self._finished = True
+            _stop_progress_emitter(getattr(self, "_pid", None), getattr(self, "_thread_state", None))
+            if self._isatty:
+                print(f"\r{self.label}... done in {elapsed:.2f}s")
+            else:
+                print(f"{self.label} done in {elapsed:.2f}s")
+            return elapsed
 
     def finalize() -> None:
         if produced:
@@ -1862,8 +2280,12 @@ def main(
         if vert_current_error:
             metadata["vert_current_error"] = vert_current_error
         stage_box["metadata"] = metadata
-        if observer_metadata is not None:
-            stage_box["observer"] = dict(observer_metadata)
+        merged_observer = _merge_observer_metadata(
+            observer_metadata,
+            stage_box.get("observer") if isinstance(stage_box.get("observer"), dict) else None,
+        )
+        if merged_observer is not None:
+            stage_box["observer"] = merged_observer
         stage_box = _normalize_stage_for_h5(stage_box)
         out_path = _stage_filename(out_dir, base, stage_tag)
         write_b3d_h5(str(out_path), stage_box)
@@ -1871,28 +2293,27 @@ def main(
         produced.append(out_path)
 
     if start_rank <= 0 and (cfg.save_empty_box or cfg.empty_box_only or cfg.stop_after in ("none", "empty", "empty_box")):
-        print("Computing NONE model...")
-        t0 = time_mod.perf_counter()
-        # NONE stage should preserve boundary conditions at z=0 and keep z>0 empty.
-        # Canonical 3D order in H5 is (nz, ny, nx).
-        nz, ny, nx = box_dims_resolved[2], box_dims_resolved[1], box_dims_resolved[0]
-        corona_bx = np.zeros((nz, ny, nx), dtype=float)
-        corona_by = np.zeros((nz, ny, nx), dtype=float)
-        corona_bz = np.zeros((nz, ny, nx), dtype=float)
-        corona_bx[0, :, :] = np.asarray(base_group["bx"], dtype=float)
-        corona_by[0, :, :] = np.asarray(base_group["by"], dtype=float)
-        corona_bz[0, :, :] = np.asarray(base_group["bz"], dtype=float)
-        stage_box = {
-            "corona": {
-                "bx": corona_bx,
-                "by": corona_by,
-                "bz": corona_bz,
-                "dr": dr3,
-                "attrs": {"model_type": "none"},
+        with _StageProgress("Computing NONE model") as progress:
+            # NONE stage should preserve boundary conditions at z=0 and keep z>0 empty.
+            # Canonical 3D order in H5 is (nz, ny, nx).
+            nz, ny, nx = box_dims_resolved[2], box_dims_resolved[1], box_dims_resolved[0]
+            corona_bx = np.zeros((nz, ny, nx), dtype=float)
+            corona_by = np.zeros((nz, ny, nx), dtype=float)
+            corona_bz = np.zeros((nz, ny, nx), dtype=float)
+            corona_bx[0, :, :] = np.asarray(base_group["bx"], dtype=float)
+            corona_by[0, :, :] = np.asarray(base_group["by"], dtype=float)
+            corona_bz[0, :, :] = np.asarray(base_group["bz"], dtype=float)
+            stage_box = {
+                "corona": {
+                    "bx": corona_bx,
+                    "by": corona_by,
+                    "bz": corona_bz,
+                    "dr": dr3,
+                    "attrs": {"model_type": "none"},
+                }
             }
-        }
-        save_stage("NONE", stage_box)
-        stage_times["NONE"] = time_mod.perf_counter() - t0
+            save_stage("NONE", stage_box)
+            stage_times["NONE"] = progress.finish()
         if cfg.empty_box_only or _last_stage_tag(cfg.stop_after) == "NONE":
             finalize()
             return
@@ -2008,37 +2429,33 @@ def main(
                     raise ValueError(f"Unsupported entry stage for --jump2nlfff path: {entry_stage}")
 
         if pot_box is None and bnd_box is None and "nlfff_box" not in locals():
-            print("Computing POT model...")
-            t0 = time_mod.perf_counter()
-            pot_box = _make_pot_box()
-            save_stage("POT", {"corona": pot_box})
-            stage_times["POT"] = time_mod.perf_counter() - t0
+            with _StageProgress("Computing POT model") as progress:
+                pot_box = _make_pot_box()
+                save_stage("POT", {"corona": pot_box})
+                stage_times["POT"] = progress.finish()
             if cfg.potential_only or _last_stage_tag(cfg.stop_after) == "POT":
                 finalize()
                 return
         elif pot_box is not None:
-            print("Preparing POT model from entry data...")
-            t0 = time_mod.perf_counter()
-            save_stage("POT", {"corona": pot_box})
-            stage_times["POT"] = time_mod.perf_counter() - t0
+            with _StageProgress("Preparing POT model from entry data") as progress:
+                save_stage("POT", {"corona": pot_box})
+                stage_times["POT"] = progress.finish()
             if cfg.potential_only or _last_stage_tag(cfg.stop_after) == "POT":
                 finalize()
                 return
 
         if bnd_box is None and pot_box is not None and not cfg.use_potential:
-            print("Computing BND model...")
-            t0 = time_mod.perf_counter()
-            bnd_box = _make_bnd_from_pot(pot_box)
-            save_stage("BND", {"corona": bnd_box})
-            stage_times["BND"] = time_mod.perf_counter() - t0
+            with _StageProgress("Computing BND model") as progress:
+                bnd_box = _make_bnd_from_pot(pot_box)
+                save_stage("BND", {"corona": bnd_box})
+                stage_times["BND"] = progress.finish()
             if _last_stage_tag(cfg.stop_after) == "BND":
                 finalize()
                 return
         elif bnd_box is not None:
-            print("Preparing BND model from entry data...")
-            t0 = time_mod.perf_counter()
-            save_stage("BND", {"corona": bnd_box})
-            stage_times["BND"] = time_mod.perf_counter() - t0
+            with _StageProgress("Preparing BND model from entry data") as progress:
+                save_stage("BND", {"corona": bnd_box})
+                stage_times["BND"] = progress.finish()
             if _last_stage_tag(cfg.stop_after) == "BND":
                 finalize()
                 return
@@ -2059,20 +2476,18 @@ def main(
                     if pot_box is None:
                         pot_box = _make_pot_box()
                     bnd_box = _make_bnd_from_pot(pot_box)
-                print("Computing NAS model...")
-                t0 = time_mod.perf_counter()
-                nlfff_box = _run_nlfff_from_bnd(bnd_box)
-                save_stage("NAS", {"corona": nlfff_box})
-                stage_times["NAS"] = time_mod.perf_counter() - t0
+                with _StageProgress("Computing NAS model") as progress:
+                    nlfff_box = _run_nlfff_from_bnd(bnd_box)
+                    save_stage("NAS", {"corona": nlfff_box})
+                    stage_times["NAS"] = progress.finish()
                 if cfg.nlfff_only or _last_stage_tag(cfg.stop_after) == "NAS":
                     finalize()
                     return
         elif str(nlfff_box.get("attrs", {}).get("model_type", "")).lower() == "nlfff":
             # Jumped to NAS from an existing NAS/GEN/CHR entry box.
-            print("Preparing NAS model from entry data...")
-            t0 = time_mod.perf_counter()
-            save_stage("NAS", {"corona": nlfff_box})
-            stage_times["NAS"] = time_mod.perf_counter() - t0
+            with _StageProgress("Preparing NAS model from entry data") as progress:
+                save_stage("NAS", {"corona": nlfff_box})
+                stage_times["NAS"] = progress.finish()
             if cfg.nlfff_only or _last_stage_tag(cfg.stop_after) == "NAS":
                 finalize()
                 return
@@ -2102,17 +2517,28 @@ def main(
         if cfg.skip_lines:
             print("Skipping GEN line computation by request...")
     else:
-        print(f"Computing {gen_stage_tag} model...")
-        t0 = time_mod.perf_counter()
-        maglib = MagFieldProcessor()
-        maglib.load_cube_vars({
-            "bx": nlfff_box["by"].swapaxes(0, 1),
-            "by": nlfff_box["bx"].swapaxes(0, 1),
-            "bz": nlfff_box["bz"].swapaxes(0, 1),
-        })
-        resolved_reduce_passed = cfg.reduce_passed if cfg.reduce_passed is not None else (0 if cfg.center_vox else 1)
-        lines = _lines_quiet(maglib, seeds=None, reduce_passed=resolved_reduce_passed)
-        compute_lines_time = time_mod.perf_counter() - t0
+        with _StageProgress(f"Computing {gen_stage_tag} model") as progress:
+            gen_load_t0 = time_mod.perf_counter()
+            maglib = MagFieldProcessor()
+            _load_maglib_idl_cube(maglib, nlfff_box, dr3)
+            gen_load_elapsed = time_mod.perf_counter() - gen_load_t0
+            resolved_reduce_passed = cfg.reduce_passed if cfg.reduce_passed is not None else (0 if cfg.center_vox else 1)
+            resolved_chromo_level = (1000.0 / float(cfg.dx_km)) if cfg.dx_km else 1.0
+            trace_kwargs = {
+                "seeds": None,
+                "chromo_level": resolved_chromo_level,
+                "reduce_passed": resolved_reduce_passed,
+            }
+            gen_trace_t0 = time_mod.perf_counter()
+            lines = _lines_fast(maglib, **trace_kwargs)
+            gen_trace_elapsed = time_mod.perf_counter() - gen_trace_t0
+            print(
+                f"\n{gen_stage_tag} tracer load: {gen_load_elapsed:.2f}s | "
+                f"line trace: {gen_trace_elapsed:.2f}s | "
+                f"reduce_passed={resolved_reduce_passed!r} | "
+                f"chromo_level={resolved_chromo_level:.12g}"
+            )
+            compute_lines_time = progress.finish()
 
     if lines is not None:
         chr_stage_tag = f"{stage_prefix}.GEN.CHR"
@@ -2128,20 +2554,21 @@ def main(
     chromo_box["attrs"] = header
 
     if not goto_chromo:
+        gen_save_t0 = time_mod.perf_counter()
         lines_group = _make_lines_group(lines, dr3)
         save_stage(gen_stage_tag, {"corona": nlfff_box, "lines": lines_group})
+        print(f"{gen_stage_tag} stage save: {time_mod.perf_counter() - gen_save_t0:.2f}s")
         stage_times[gen_stage_tag] = compute_lines_time
         if cfg.generic_only or _last_stage_tag(cfg.stop_after) == "GEN":
             finalize()
             return
 
-    print(f"Computing {chr_stage_tag} model...")
-    t0 = time_mod.perf_counter()
-    chr_stage = {"corona": nlfff_box, "chromo": _make_chromo_group(chromo_box)}
-    if lines is not None:
-        chr_stage["lines"] = _make_lines_group(lines, dr3)
-    save_stage(chr_stage_tag, chr_stage)
-    stage_times[chr_stage_tag] = time_mod.perf_counter() - t0
+    with _StageProgress(f"Computing {chr_stage_tag} model") as progress:
+        chr_stage = {"corona": nlfff_box, "chromo": _make_chromo_group(chromo_box)}
+        if lines is not None:
+            chr_stage["lines"] = _make_lines_group(lines, dr3)
+        save_stage(chr_stage_tag, chr_stage)
+        stage_times[chr_stage_tag] = progress.finish()
 
     finalize()
 

@@ -15,14 +15,21 @@ import numpy as np
 import astropy.units as u
 from astropy.coordinates import SkyCoord
 from astropy.time import Time
-from sunpy.coordinates import Heliocentric, HeliographicCarrington, HeliographicStonyhurst, Helioprojective, get_earth
+from sunpy.coordinates import (
+    Heliocentric,
+    HeliographicCarrington,
+    HeliographicStonyhurst,
+    Helioprojective,
+    get_earth,
+)
 from sunpy.sun import constants as sun_consts
 
-from pyampp.gxbox.box import Box
+from pyampp.gxbox.box import Box, BoxGeometryMixin
 from pyampp.gxbox.boxutils import read_b3d_h5
 from pyampp.gxbox.gx_fov2box import _decode_id_text, _extract_execute_geometry, _infer_time_from_entry_loaded
-from pyampp.gxbox.magfield_viewer import MagFieldViewer
+from pyampp.gxbox.observer_restore import resolve_observer_with_info
 from PyQt5.QtWidgets import QApplication, QFileDialog
+from PyQt5.QtCore import QTimer
 
 
 def _decode_meta_text(value) -> str:
@@ -67,7 +74,7 @@ def normalize_viewer_axis_order(b3d: dict) -> dict:
 
 
 @dataclass
-class SimpleBox:
+class SimpleBox(BoxGeometryMixin):
     dims_pix: np.ndarray
     res: u.Quantity
     b3d: dict
@@ -136,8 +143,14 @@ def _box_from_saved_model(b3d: dict, model_path: Path):
 
     dims = infer_dims(b3d)
     res = infer_res(b3d).to(u.Mm)
-    observer = get_earth(obs_time)
+    # Display/LoS observer (camera, projected views) comes from saved observer metadata.
+    observer, observer_warning = _resolve_model_observer(b3d, obs_time)
+    if observer_warning:
+        print(f"Warning: {observer_warning}")
     frame_obs = Helioprojective(observer=observer, obstime=obs_time)
+    # Geometry in EXECUTE comes from the original model definition (Earth frame).
+    geom_observer = get_earth(obs_time)
+    frame_geom = Helioprojective(observer=geom_observer, obstime=obs_time)
 
     try:
         if (frame_mode or "hpc").lower() == "hgc":
@@ -146,9 +159,9 @@ def _box_from_saved_model(b3d: dict, model_path: Path):
                 lat=float(coords[1]) * u.deg,
                 radius=sun_consts.radius.to(u.Mm),
                 obstime=obs_time,
-                observer=observer,
+                observer=geom_observer,
                 frame=HeliographicCarrington,
-            ).transform_to(frame_obs)
+            ).transform_to(frame_geom)
         elif (frame_mode or "hpc").lower() == "hgs":
             box_origin = SkyCoord(
                 lon=float(coords[0]) * u.deg,
@@ -156,12 +169,12 @@ def _box_from_saved_model(b3d: dict, model_path: Path):
                 radius=sun_consts.radius.to(u.Mm),
                 obstime=obs_time,
                 frame=HeliographicStonyhurst,
-            ).transform_to(frame_obs)
+            ).transform_to(frame_geom)
         else:
             box_origin = SkyCoord(
                 Tx=float(coords[0]) * u.arcsec,
                 Ty=float(coords[1]) * u.arcsec,
-                frame=frame_obs,
+                frame=frame_geom,
             )
     except Exception:
         return None, None
@@ -178,6 +191,20 @@ def _box_from_saved_model(b3d: dict, model_path: Path):
     )
     box = Box(frame_obs, box_origin, box_center, box_dims, res)
     return box, obs_time
+
+
+def _resolve_model_observer(b3d: dict, obs_time: Time):
+    observer_meta = b3d.get("observer", {}) if isinstance(b3d, dict) else {}
+    if isinstance(observer_meta, dict):
+        fov_box = observer_meta.get("fov_box", {})
+        if isinstance(fov_box, dict):
+            coord, warning, _used_key = resolve_observer_with_info(b3d, fov_box.get("observer_key"), obs_time)
+            return coord, warning
+        if observer_meta.get("name") is not None:
+            coord, warning, _used_key = resolve_observer_with_info(b3d, observer_meta.get("name"), obs_time)
+            return coord, warning
+    coord, warning, _used_key = resolve_observer_with_info(b3d, "earth", obs_time)
+    return coord, warning
 
 
 def _normalize_vector(vec: np.ndarray) -> np.ndarray | None:
@@ -288,7 +315,7 @@ def prepare_model_for_viewer(model_path: str | Path) -> tuple[SimpleBox, Time, s
         dims = infer_dims(b3d)
         obs_time = infer_time(b3d)
         res = infer_res(b3d)
-        frame = Heliocentric(observer=get_earth(obs_time), obstime=obs_time)
+        frame = Heliocentric(observer=_resolve_model_observer(b3d, obs_time), obstime=obs_time)
         center = SkyCoord(0 * u.Mm, 0 * u.Mm, 0 * u.Mm, frame=frame)
         box = SimpleBox(dims_pix=dims, res=res.to(u.Mm), b3d=b3d, _frame_obs=frame, _center=center)
 
@@ -326,6 +353,8 @@ def prepare_model_for_viewer(model_path: str | Path) -> tuple[SimpleBox, Time, s
 
 
 def main() -> int:
+    from pyampp.gxbox.magfield_viewer import MagFieldViewer
+
     parser = argparse.ArgumentParser(description="Open a saved HDF5 model in the 3D viewer without recomputing.")
     parser.add_argument("h5_path", nargs="?", help="Path to the HDF5 model file (positional).")
     parser.add_argument("--h5", dest="h5_opt", help="Path to the HDF5 model file.")
@@ -381,7 +410,17 @@ def main() -> int:
     )
     if hasattr(viewer, "app_window"):
         viewer.app_window.setWindowTitle(f"GxBox 3D viewer - {model_path}")
+        viewer.app_window.show()
+        viewer.app_window.showNormal()
+        if hasattr(viewer, "ensure_window_visible"):
+            viewer.ensure_window_visible()
+        viewer.app_window.raise_()
+        viewer.app_window.activateWindow()
     viewer.show()
+    if hasattr(viewer, "schedule_startup_los_view"):
+        viewer.schedule_startup_los_view()
+    else:
+        QTimer.singleShot(0, viewer.set_camera_to_LOS_direction)
     if owns_app:
         app.exec_()
     # Temporary conversion artifact can be removed after viewer exits.

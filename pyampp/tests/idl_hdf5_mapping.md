@@ -126,6 +126,9 @@ Same required `corona/` contract as BND/POT.
 - `voxel_status`: 1D uint8
 - `av_field`: 1D float
 - `phys_length`: 1D float
+  Unit: solar radii in saved `NAS.GEN`/`NAS.CHR` products.
+  The raw DLL `VPHYSLENGTH` output is in voxel-length units and must be
+  multiplied by `dr[0]` before being persisted as `lines/phys_length`.
 
 ## 5.6 NAS.CHR (`*.NAS.CHR.h5`)
 `corona/` + `lines/` preserved, plus `chromo/`:
@@ -146,6 +149,9 @@ Same required `corona/` contract as BND/POT.
 Clarification:
 - `chromo/bx|by|bz` are CHR fields; they are not aliases of `corona/bx|by|bz`.
 - `corona/corona_base` remains under `corona/` at CHR too.
+- `lines/phys_length` in saved HDF5 and IDL `GEN/CHR` products is stored in
+  solar-radius units, not centimeters. Consumers that need cgs length must
+  convert via `phys_length * RSun`.
 
 ---
 

@@ -3,8 +3,8 @@ pyAMPP HDF5 Model Format
 
 This page documents the current stage-file contract written by ``gx-fov2box`` and consumed by:
 
-- ``gxbox-view3d`` (3D viewer; legacy alias: ``gxbox-view``),
-- ``gxbox-view2d`` (2D FOV / box viewer; legacy alias: ``gxbox-select``),
+- ``gxbox-view3d`` (3D viewer),
+- ``gxbox-view2d`` (2D FOV / box viewer),
 - ``gxrefmap-view`` (base/refmap browser),
 - resume/rebuild workflows via ``--entry-box``.
 
@@ -47,11 +47,29 @@ Core provenance:
 Optional observer / FOV metadata used by 2D resume and viewer flows:
 
 - ``observer/name``
+- ``observer/label`` as the user-facing observer identifier shown in the 2D selector
+- ``observer/source`` when the observer record comes from an uploaded reference file
 - ``observer/fov/frame``
 - ``observer/fov/xc_arcsec``, ``observer/fov/yc_arcsec``
 - ``observer/fov/xsize_arcsec``, ``observer/fov/ysize_arcsec``
 - ``observer/fov/square``
-- ``observer/ephemeris/*`` when available
+- ``observer/ephemeris/*`` as the canonical observer-state block
+- ``observer/pb0r/*`` as an optional redundant derived block for SSW-style
+  ``B0 / L0 / Rsun`` interoperability
+
+Viewer UI semantics:
+
+- ``MODEL-DATE`` is the saved model time.
+- ``OBS-DATE`` is the true observer-record time.
+- For built-in observers those typically match; uploaded/manual custom observers may intentionally differ.
+
+The current derived ``observer/pb0r`` keys are:
+
+- ``observer/pb0r/obs_date``
+- ``observer/pb0r/b0_deg``
+- ``observer/pb0r/l0_deg``
+- ``observer/pb0r/p_deg`` when available
+- ``observer/pb0r/rsun_arcsec``
 
 ``refmaps``
 ~~~~~~~~~~~

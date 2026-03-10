@@ -138,6 +138,7 @@ class PyAmppGUI(QMainWindow):
         self._selector_fov: DisplayFovSelection | None = None
         self._selector_square_fov = False
         self._selector_observer_name = "earth"
+        self._selector_unsaved_session_active = False
         self.info_only_box = None
         self._last_model_path = None
         self._last_valid_entry_box = ""
@@ -262,6 +263,8 @@ class PyAmppGUI(QMainWindow):
         self.hgs_radio_button.setChecked(cfg["coord_mode"] == "hgs")
         self.proj_cea_radio.setChecked(cfg["projection"] == "cea")
         self.proj_top_radio.setChecked(cfg["projection"] == "top")
+        self._set_download_backend("drms")
+        self._set_use_cached_downloads(True)
 
     def _restore_session_state_from_settings(self):
         # Core geometry / coordinate state
@@ -289,6 +292,8 @@ class PyAmppGUI(QMainWindow):
         projection = self._settings.value("session/projection", "cea", type=str).lower()
         self.proj_cea_radio.setChecked(projection == "cea")
         self.proj_top_radio.setChecked(projection == "top")
+        self._set_download_backend(self._settings.value("session/download_backend", "drms", type=str))
+        self._set_use_cached_downloads(self._settings.value("session/use_cached_downloads", True, type=bool))
 
         # Entry mode
         self._set_jump_action(self._settings.value("session/entry_mode", "continue", type=str))
@@ -338,6 +343,8 @@ class PyAmppGUI(QMainWindow):
             self._settings.setValue("session/pad_percent", self.padding_size_edit.text().strip())
             self._settings.setValue("session/coord_mode", self._current_coord_mode().value)
             self._settings.setValue("session/projection", "cea" if self.proj_cea_radio.isChecked() else "top")
+            self._settings.setValue("session/download_backend", self._selected_download_backend())
+            self._settings.setValue("session/use_cached_downloads", self._use_cached_downloads())
             self._settings.setValue("session/entry_mode", self._get_jump_action())
             self._settings.setValue("session/entry_box_path", self.external_box_edit.text().strip())
 
@@ -391,6 +398,9 @@ class PyAmppGUI(QMainWindow):
         self._refresh_after_session_state_apply()
 
     def on_open_fov_selector_clicked(self):
+        if self._selector_unsaved_session_active:
+            self._launch_download_fov_selector_placeholder()
+            return
         model_path = self._current_viewable_model_path()
         if model_path is not None and model_path.suffix.lower() == ".h5":
             self._launch_box_view2d(model_path)
@@ -928,6 +938,33 @@ class PyAmppGUI(QMainWindow):
         self.model_time_edit.setDateTime(QDateTime.currentDateTimeUtc())
         self.model_time_edit.setDateTimeRange(QDateTime(2010, 1, 1, 0, 0, 0), QDateTime(QDateTime.currentDateTimeUtc()))
         self.model_time_edit.dateTimeChanged.connect(self.on_time_input_changed)
+        self.download_backend_label = QLabel("Downloader:")
+        self.download_backend_fido_radio = QRadioButton("Fido")
+        self.download_backend_drms_radio = QRadioButton("DRMS")
+        self.download_use_cache_box = QCheckBox("Use cache")
+        self.download_backend_group = QButtonGroup(self)
+        self.download_backend_group.addButton(self.download_backend_fido_radio)
+        self.download_backend_group.addButton(self.download_backend_drms_radio)
+        self.download_backend_drms_radio.setChecked(True)
+        self.download_use_cache_box.setChecked(True)
+        self.download_backend_fido_radio.setToolTip("Use the existing SunPy/Fido downloader path.")
+        self.download_backend_drms_radio.setToolTip("Use the direct DRMS/JSOC downloader path for comparison.")
+        self.download_use_cache_box.setToolTip("Reuse matching local files when available. Uncheck to force redownload for benchmarking.")
+        self.download_backend_fido_radio.toggled.connect(self.update_command_display)
+        self.download_backend_drms_radio.toggled.connect(self.update_command_display)
+        self.download_use_cache_box.toggled.connect(self.update_command_display)
+        if hasattr(self, "modelTimeLayout") and self.modelTimeLayout is not None:
+            insert_idx = self.modelTimeLayout.indexOf(self.spacer_modelTime) if hasattr(self, "spacer_modelTime") else -1
+            if insert_idx < 0:
+                insert_idx = self.modelTimeLayout.count()
+            for widget in (
+                self.download_backend_label,
+                self.download_backend_drms_radio,
+                self.download_backend_fido_radio,
+                self.download_use_cache_box,
+            ):
+                self.modelTimeLayout.insertWidget(insert_idx, widget)
+                insert_idx += 1
 
         self.coord_x_edit.returnPressed.connect(lambda: self.on_coord_x_input_return_pressed(self.coord_x_edit))
         self.coord_y_edit.returnPressed.connect(lambda: self.on_coord_y_input_return_pressed(self.coord_y_edit))
@@ -1215,6 +1252,7 @@ class PyAmppGUI(QMainWindow):
             rebuild_obs = mode == "rebuild_obs"
             rebuild_none = mode == "rebuild_none"
             start_stage = 0 if (not has_entry or rebuild_obs or rebuild_none or modify_mode) else stage_rank.get(self._entry_stage_detected or "NONE", 0)
+            allow_download_stage = (not has_entry) or rebuild_obs or rebuild_none or modify_mode
 
             if not has_entry and mode != "continue":
                 self._set_jump_action("continue")
@@ -1239,6 +1277,11 @@ class PyAmppGUI(QMainWindow):
                 self.download_hmi_box.setChecked(True)
                 self.download_hmi_box.setEnabled(False)
                 self.download_hmi_box.blockSignals(False)
+                if modify_mode:
+                    for box in (self.download_aia_uv, self.download_aia_euv):
+                        box.blockSignals(True)
+                        box.setChecked(True)
+                        box.blockSignals(False)
                 self.download_aia_uv.setEnabled(True)
                 self.download_aia_euv.setEnabled(True)
 
@@ -1274,7 +1317,7 @@ class PyAmppGUI(QMainWindow):
             skip_lines = self.skip_line_computation_box.isChecked()
 
             for box, stage, _save in stop_stage_boxes:
-                enabled = (stage == -1 and start_stage == 0) or (stage >= start_stage)
+                enabled = (stage == -1 and allow_download_stage) or (stage >= start_stage)
                 if stop_stage is not None and stage > stop_stage:
                     enabled = False
                 if use_potential and stage in (2, 3):
@@ -1362,7 +1405,7 @@ class PyAmppGUI(QMainWindow):
         """
         icon_size = QSize(20, 20)
         button_width = 34
-        icon_dir = Path(__file__).resolve().parents[2] / "docs" / "svg"
+        icon_dir = self._resolve_svg_dir()
         self.reset_test_defaults_button = QPushButton("Reset to Test Defaults")
         self.restore_last_saved_button = QPushButton("Restore Last Saved")
         self.reset_test_defaults_button.setToolTip(
@@ -1381,11 +1424,25 @@ class PyAmppGUI(QMainWindow):
         self.restore_last_saved_button.setIconSize(icon_size)
         self.info_only_box = QCheckBox("Info Only")
         self.info_only_box.toggled.connect(self.update_command_display)
+        self.command_menu_button = QToolButton()
+        self.command_menu_button.setToolTip("gx-fov2box command options")
+        self.command_menu_button.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
+        self.command_menu_button.setFixedWidth(button_width)
+        self.command_menu_button.setIconSize(icon_size)
+        self.command_menu_button.setPopupMode(QToolButton.InstantPopup)
+        command_menu = QMenu(self.command_menu_button)
+        command_menu.addAction("Copy Command", self.copy_command)
+        command_menu.addAction("Save Script As...", self.save_command)
+        self.command_menu_button.setMenu(command_menu)
         self.open_fov_selector_button = QPushButton("")
         self.open_fov_selector_button.setToolTip(
             "Open gxbox-view2d on demand (2D map/FOV viewer using current GUI fields and local cached maps if available)."
         )
-        self.open_fov_selector_button.setIcon(QIcon(str(icon_dir / "monitor.svg")))
+        monitor_icon = icon_dir / "monitor.svg"
+        if monitor_icon.exists():
+            self.open_fov_selector_button.setIcon(QIcon(str(monitor_icon)))
+        else:
+            self.open_fov_selector_button.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon))
         self.open_fov_selector_button.setFixedWidth(button_width)
         self.open_fov_selector_button.setIconSize(icon_size)
         self.open_fov_selector_button.clicked.connect(self.on_open_fov_selector_clicked)
@@ -1397,7 +1454,11 @@ class PyAmppGUI(QMainWindow):
         self.save_button.clicked.connect(self.save_command)
         self.send_to_viewer_button = QPushButton("")
         self.send_to_viewer_button.setToolTip("Open the latest generated model in gxbox-view3d")
-        self.send_to_viewer_button.setIcon(QIcon(str(icon_dir / "box.svg")))
+        box_icon = icon_dir / "box.svg"
+        if box_icon.exists():
+            self.send_to_viewer_button.setIcon(QIcon(str(box_icon)))
+        else:
+            self.send_to_viewer_button.setIcon(self.style().standardIcon(QStyle.SP_DirIcon))
         self.send_to_viewer_button.setFixedWidth(button_width)
         self.send_to_viewer_button.setIconSize(icon_size)
         self.send_to_viewer_button.setEnabled(False)
@@ -1418,12 +1479,29 @@ class PyAmppGUI(QMainWindow):
                 self.reset_test_defaults_button,
                 self.restore_last_saved_button,
                 self.info_only_box,
+                self.command_menu_button,
                 self.open_fov_selector_button,
                 self.send_to_viewer_button,
                 self.exit_button,
             ):
                 self.cmd_button_layout.insertWidget(spacer_idx, widget)
                 spacer_idx += 1
+
+    @staticmethod
+    def _resolve_svg_dir() -> Path:
+        here = Path(__file__).resolve()
+        candidates = [
+            here.parents[2] / "docs" / "svg",
+            here.parents[1] / "docs" / "svg",
+            Path.cwd() / "docs" / "svg",
+        ]
+        for candidate in candidates:
+            try:
+                if candidate.exists():
+                    return candidate
+            except Exception:
+                continue
+        return candidates[0]
 
     def add_status_log(self):
         """
@@ -1625,6 +1703,7 @@ class PyAmppGUI(QMainWindow):
         self.apply_geometry_selection(result.geometry)
         self._selector_fov = result.fov
         self._selector_square_fov = bool(result.square_fov)
+        self._selector_unsaved_session_active = True
         self.update_command_display()
         if result.fov is not None:
             self.status_log_edit.append("Stored observer FOV metadata from selector API.")
@@ -1768,6 +1847,7 @@ class PyAmppGUI(QMainWindow):
                 euv=self.download_aia_euv.isChecked(),
                 uv=self.download_aia_uv.isChecked(),
                 hmi=True,
+                backend=self._selected_download_backend(),
             )
             # Local file discovery only; do not trigger network fetch here.
             map_files = dl._check_files_exist(dl.path, returnfilelist=True)
@@ -1799,6 +1879,7 @@ class PyAmppGUI(QMainWindow):
             square_fov=bool(self._selector_square_fov),
             map_ids=map_ids,
             map_files=map_files,
+            display_observer_key=self._selector_observer_name or "earth",
             initial_map_id="171" if "171" in map_ids else ("Bz" if "Bz" in map_ids else (map_ids[0] if map_ids else None)),
             pad_frac=pad_frac,
         )
@@ -1850,6 +1931,10 @@ class PyAmppGUI(QMainWindow):
             command += ['--euv']
         if self.download_aia_uv.isChecked():
             command += ['--uv']
+        if self._selected_download_backend() == "fido":
+            command += ['--use-fido']
+        if not self._use_cached_downloads():
+            command += ['--force-download']
 
         if self.save_empty_box.isChecked():
             command += ['--save-empty-box']
@@ -1913,6 +1998,25 @@ class PyAmppGUI(QMainWindow):
 
         return command
 
+    def _selected_download_backend(self) -> str:
+        if hasattr(self, "download_backend_drms_radio") and self.download_backend_drms_radio.isChecked():
+            return "drms"
+        return "fido"
+
+    def _set_download_backend(self, backend: str) -> None:
+        key = str(backend or "drms").strip().lower()
+        if hasattr(self, "download_backend_drms_radio"):
+            self.download_backend_drms_radio.setChecked(key == "drms")
+        if hasattr(self, "download_backend_fido_radio"):
+            self.download_backend_fido_radio.setChecked(key != "drms")
+
+    def _use_cached_downloads(self) -> bool:
+        return not hasattr(self, "download_use_cache_box") or self.download_use_cache_box.isChecked()
+
+    def _set_use_cached_downloads(self, use_cache: bool) -> None:
+        if hasattr(self, "download_use_cache_box"):
+            self.download_use_cache_box.setChecked(bool(use_cache))
+
     def execute_command(self):
         """
         Executes the constructed command.
@@ -1922,7 +2026,19 @@ class PyAmppGUI(QMainWindow):
             return
 
         self._save_session_state_to_settings()
+        modify_mode = self._get_jump_action() == "modify"
         command = self.get_command()
+        if modify_mode and self._has_entry_box():
+            self.external_box_edit.blockSignals(True)
+            self.external_box_edit.clear()
+            self.external_box_edit.blockSignals(False)
+            self._last_valid_entry_box = ""
+            self._entry_stage_detected = None
+            self._entry_type_detected = None
+            self._selector_unsaved_session_active = False
+            self._sync_pipeline_options()
+            self.update_command_display()
+            self.status_log_edit.append("Modify mode consumed the entry box; cleared entry-box field before run.")
         self._proc_command = list(command)
         self._pending_stop_after = self._command_stop_after(command)
         self._last_model_path = None
@@ -2053,10 +2169,14 @@ class PyAmppGUI(QMainWindow):
             exit_code = self._gxbox_proc.returncode
             if exit_code == 0:
                 self.status_log_edit.append("Command finished successfully")
-                self._update_last_model_path()
                 if self._pending_stop_after == "dl":
+                    self._last_model_path = None
+                    self._refresh_viewer_button_state()
                     self._launch_download_fov_selector_placeholder()
-                elif self._pending_stop_after is not None:
+                else:
+                    self._selector_unsaved_session_active = False
+                    self._update_last_model_path()
+                if self._pending_stop_after is not None and self._pending_stop_after != "dl":
                     self._launch_stop_stage_box_view2d()
             else:
                 self.status_log_edit.append(f"Command exited with code {exit_code}")
@@ -2073,10 +2193,34 @@ class PyAmppGUI(QMainWindow):
 
     def save_command(self):
         """
-        Saves the current command.
+        Saves the current gx-fov2box command as a shell script.
         """
-        # Placeholder for saving command
-        self.status_log_edit.append("Command saved")
+        file_name, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save gx-fov2box Script",
+            str(Path.cwd() / "gx_fov2box.sh"),
+            "Shell Scripts (*.sh);;Text Files (*.txt);;All Files (*)",
+        )
+        if not file_name:
+            return
+
+        command_text = " ".join(self.get_command()).strip()
+        script_text = f"#!/bin/sh\n{command_text}\n"
+        try:
+            with open(file_name, "w", encoding="utf-8") as f:
+                f.write(script_text)
+            if str(file_name).lower().endswith(".sh"):
+                os.chmod(file_name, 0o755)
+            self.status_log_edit.append(f"Saved gx-fov2box script: {file_name}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Save Failed", f"Could not save gx-fov2box script:\n{exc}")
+
+    def copy_command(self):
+        """
+        Copies the current gx-fov2box command line to the clipboard.
+        """
+        QApplication.clipboard().setText(" ".join(self.get_command()).strip())
+        self.status_log_edit.append("Copied gx-fov2box command to clipboard.")
 
     def refresh_command(self):
         """
@@ -2177,6 +2321,7 @@ class PyAmppGUI(QMainWindow):
         self.external_box_edit.blockSignals(True)
         self.external_box_edit.setText(path_text)
         self.external_box_edit.blockSignals(False)
+        self._selector_unsaved_session_active = False
         try:
             self.update_external_box_dir()
             self._set_jump_action("continue")

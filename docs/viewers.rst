@@ -4,11 +4,8 @@ Model Viewers
 gxbox-view3d
 ------------
 
-``gxbox-view3d`` opens an existing model HDF5 file in the 3D viewer without recomputing.
-
-Legacy alias:
-
-- ``gxbox-view`` (kept for backward compatibility)
+``gxbox-view3d`` is the interactive 3D inspection tool for an existing model HDF5 file.
+It does not recompute the model.
 
 Expected inputs:
 
@@ -32,17 +29,16 @@ Optional file picker mode:
 gxbox-view2d
 ------------
 
-``gxbox-view2d`` opens the 2D FOV / box selector from an existing ``.h5`` or ``.sav`` box file.
+``gxbox-view2d`` is the interactive 2D geometry and context-map tool for an existing
+``.h5`` or ``.sav`` box file.
 
 Behavior:
 
 - loads geometry, stage metadata, and available embedded/base/refmap context from the selected box
 - persists updated observer/FOV metadata back to ``.h5`` boxes when the dialog is accepted
+- supports built-in, manual custom, and uploaded-reference observer workflows in the observer panel
+- exposes ``MODEL-DATE`` separately from the true observer ``OBS-DATE`` when the observer record comes from an external reference
 - is used by the main ``pyampp`` GUI after explicit stop-stage completions (POT, NAS, GEN, CHR)
-
-Legacy alias:
-
-- ``gxbox-select`` (kept for backward compatibility)
 
 Usage:
 
@@ -59,7 +55,7 @@ Optional file picker mode:
 gxrefmap-view
 -------------
 
-``gxrefmap-view`` is a 2D map browser for base maps and refmaps stored in model HDF5 files.
+``gxrefmap-view`` is a lightweight 2D browser for base maps and refmaps stored in model HDF5 files.
 
 Expected layout:
 
@@ -96,6 +92,7 @@ h5tree
 Metadata behavior:
 
 - Metadata values (``metadata/*``) are shown by default.
+- Observer summary values (``observer/name``, optional ``observer/label`` / ``observer/source``, and ``observer/pb0r/*``) are also shown by default when present.
 - Use ``--no-metadata`` to suppress metadata value lines.
 - Use ``--meta`` to print only metadata values (no tree output).
 
@@ -116,3 +113,11 @@ Metadata-only mode:
 .. code-block:: bash
 
    h5tree /path/to/model.h5 --meta
+
+Role Summary
+------------
+
+- Use ``pyampp`` to configure and launch model-production runs.
+- Use ``gxbox-view2d`` to inspect or edit FOV / box geometry on existing model files.
+- Use ``gxbox-view3d`` to inspect the saved 3D magnetic model.
+- Use ``gxrefmap-view`` when you only need to browse stored 2D maps.

@@ -24,6 +24,7 @@ reports/parity_review/PRESENTATION_COMPARISON_TEST_CHR_NONE.md
 
 # Private local notes (not for version control)
 notes/private/
+legacy/
 
 # Local ad hoc test helpers under the package tree
 pyampp/test_local/

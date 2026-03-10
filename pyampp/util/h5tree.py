@@ -28,6 +28,35 @@ def _matches_filter(full_path: str, name: str, flt: Optional[str]) -> bool:
     return flt in full_path.lower() or flt in name.lower()
 
 
+def _decode_scalar(value: Any) -> Any:
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode()
+    return value
+
+
+def _print_metadata_values(meta: h5py.Group) -> None:
+    for key in meta.keys():
+        val = _decode_scalar(meta[key][()])
+        print(f"metadata/{key}: {val}")
+
+
+def _print_observer_summary(h5f: h5py.File) -> None:
+    observer = h5f.get("observer")
+    if not isinstance(observer, h5py.Group):
+        return
+    if "name" in observer:
+        print(f"observer/name: {_decode_scalar(observer['name'][()])}")
+    if "label" in observer:
+        print(f"observer/label: {_decode_scalar(observer['label'][()])}")
+    if "source" in observer:
+        print(f"observer/source: {_decode_scalar(observer['source'][()])}")
+    pb0r = observer.get("pb0r")
+    if not isinstance(pb0r, h5py.Group):
+        return
+    for key in pb0r.keys():
+        print(f"observer/pb0r/{key}: {_decode_scalar(pb0r[key][()])}")
+
+
 def _print_group(
     group: h5py.Group,
     prefix: str,
@@ -91,12 +120,9 @@ def main(
             print(f"{path}")
             _print_group(h5f, "", show_attrs, max_attr_len, max_depth, 0, flt, "")
         if (not no_metadata) and "metadata" in h5f:
-            meta = h5f["metadata"]
-            for key in meta.keys():
-                val = meta[key][()]
-                if isinstance(val, (bytes, bytearray)):
-                    val = val.decode()
-                print(f"metadata/{key}: {val}")
+            _print_metadata_values(h5f["metadata"])
+        if not no_metadata:
+            _print_observer_summary(h5f)
 
 
 if __name__ == "__main__":

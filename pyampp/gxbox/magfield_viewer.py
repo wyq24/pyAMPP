@@ -1,8 +1,10 @@
 import copy
+import logging
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QComboBox, QLabel, \
     QPushButton, QDoubleSpinBox, QLineEdit, QCheckBox, QMessageBox, QMenu, QHeaderView, QFileDialog, QAction, QToolButton, \
     QToolBar, QGridLayout
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QGuiApplication
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 import astropy.units as u
@@ -10,6 +12,7 @@ from astropy.coordinates import SkyCoord
 from astropy.time import Time
 from sunpy.coordinates import Heliocentric, Helioprojective
 from pyampp.gxbox.boxutils import validate_number, read_b3d_h5, write_b3d_h5, update_line_seeds_h5
+from pyampp.gxbox.observer_restore import resolve_observer_with_info
 import pickle
 import vtk
 
@@ -19,6 +22,8 @@ from PyQt5.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLab
     QGroupBox
 from PyQt5.QtGui import QStandardItemModel, QStandardItem
 import numpy as np
+
+logging.getLogger("sunpy").setLevel(logging.WARNING)
 
 ## todo is it possible to add 3d crosshair to the plotter?
 ## todo integrate NLFFF extrapolation module. https://github.com/Alexey-Stupishin/pyAMaFiL
@@ -98,7 +103,7 @@ def generate_streamlines_from_line_seeds(box, b3dtype, line_seeds):
             source_radius=radius,
             n_points=n_points,
             integration_direction="both",
-            max_time=5000,
+            max_length=5000,
             progress_bar=False,
         )
         if sl is not None and getattr(sl, "n_lines", 0) > 0:
@@ -117,6 +122,8 @@ class MagFieldViewer(BackgroundPlotter):
     """
 
     def __init__(self, box, parent=None, box_norm_direction=None, box_view_up=None, time=None, b3dtype='nlfff', model_path=None, session_mode=None, *args, **kwargs):
+        # Build the scene fully before first paint; callers explicitly call .show().
+        kwargs.setdefault("show", False)
         super().__init__(*args, **kwargs)
         self.box = box
         self.parent = parent
@@ -142,8 +149,8 @@ class MagFieldViewer(BackgroundPlotter):
         self.sphere_visible = True
         self.slice_visible = True
         self.base_map_visible = False
-        self.model_box_visible = False
-        self.fov_box_visible = False
+        self.model_box_visible = True
+        self.fov_box_visible = True
         self.plane_visible = True
         self.use_interp = True
         self.scalar = 'bz'
@@ -180,6 +187,12 @@ class MagFieldViewer(BackgroundPlotter):
         self.cancel_button = None
         self.save_as_button = None
         self.parallel_proj_button = None
+        self.field_lines_control_group = None
+        self.sphere_control_group = None
+        self._streamline_controls_enabled = True
+        self._los_label_text = ""
+        self._embedded_close_mode = None
+        self._close_hook_installed = False
         self.base_vmin_input = None
         self.base_vmax_input = None
         self.timestr = time.to_datetime().strftime("_%Y%m%dT%H%M%S") if time is not None else ''
@@ -218,14 +231,16 @@ class MagFieldViewer(BackgroundPlotter):
         self.add_widgets_to_window()
         self.init_plot()
         self.show_axes_all()
-        self.view_isometric()
+        # Keep startup in observer LoS (do not override with isometric).
         self.plane_checkbox.setChecked(False)
         self.app_window.setWindowTitle("GxBox 3D viewer")
         self.add_menu_options()  # Add this line to include menu options
         self.add_parallel_projection_button() # Add parallel projection button
         if self.box_norm_direction is not None and self.box_view_up is not None:
             self.add_observer_cam_button()  # Add this line to include the observer cam button
+        self._apply_streamline_control_state()
         self._restore_line_seeds_from_box()
+        self._install_embedded_close_hook()
 
         ## Connect the camera modified event to the callback function
         # self.interactor.AddObserver('ModifiedEvent', self.print_camera_position)
@@ -262,23 +277,35 @@ class MagFieldViewer(BackgroundPlotter):
             return arr / norm
 
         box_frame = getattr(getattr(self.box, "_center", None), "frame", None)
-        observer = None
-        obstime = None
-        if box_frame is not None:
+        frame_obs = getattr(self.box, "_frame_obs", None)
+        observer = getattr(frame_obs, "observer", None)
+        obstime = getattr(frame_obs, "obstime", None)
+        if observer is None and box_frame is not None:
             observer = getattr(box_frame, "observer", None)
+        if obstime is None and box_frame is not None:
             obstime = getattr(box_frame, "obstime", None)
-        if observer is None:
-            frame_obs = getattr(self.box, "_frame_obs", None)
-            observer = getattr(frame_obs, "observer", None)
-            if obstime is None:
-                obstime = getattr(frame_obs, "obstime", None)
+        observer_meta = self.box.b3d.get("observer", {}) if isinstance(getattr(self.box, "b3d", None), dict) else {}
+        if isinstance(observer_meta, dict):
+            observer_key = observer_meta.get("name")
+            if observer_key:
+                try:
+                    resolved, warning, used_key = resolve_observer_with_info(
+                        getattr(self.box, "b3d", None) if isinstance(getattr(self.box, "b3d", None), dict) else {},
+                        observer_key,
+                        obstime,
+                    )
+                    if warning:
+                        print(f"Warning: {warning}")
+                    if resolved is not None:
+                        observer = resolved
+                except Exception:
+                    pass
         if box_frame is None or observer is None:
             return
 
         center = getattr(self.box, "_center", None)
         if center is None:
             return
-        frame_obs = getattr(self.box, "_frame_obs", None)
         if frame_obs is None:
             return
         step_arcsec = 10.0 * u.arcsec
@@ -461,7 +488,144 @@ class MagFieldViewer(BackgroundPlotter):
 
         if self.parallel_proj_button is not None:
             self.parallel_proj_button.setChecked(True)
+        self._update_los_scene_label()
         self.render()
+
+    @staticmethod
+    def _normalize_observer_key(observer_key):
+        raw = observer_key
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8", "ignore")
+        if isinstance(raw, np.ndarray) and raw.shape == ():
+            raw = raw.item()
+            if isinstance(raw, (bytes, bytearray)):
+                raw = raw.decode("utf-8", "ignore")
+        key = str(raw or "earth").strip().lower()
+        aliases = {
+            "sdo": "SDO",
+            "earth": "Earth",
+            "solo": "Solar Orbiter",
+            "solar orbiter": "Solar Orbiter",
+            "solar-orbiter": "Solar Orbiter",
+            "solarorbiter": "Solar Orbiter",
+            "stereo-a": "STEREO-A",
+            "stereo a": "STEREO-A",
+            "stereoa": "STEREO-A",
+            "stereo-b": "STEREO-B",
+            "stereo b": "STEREO-B",
+            "stereob": "STEREO-B",
+        }
+        return aliases.get(key, str(raw))
+
+    def _current_los_label(self) -> str:
+        observer_meta = self.box.b3d.get("observer", {}) if isinstance(self.box.b3d, dict) else {}
+        if not isinstance(observer_meta, dict):
+            observer_meta = {}
+        if "name" in observer_meta:
+            return self._normalize_observer_key(observer_meta.get("name"))
+        fov_box = observer_meta.get("fov_box", {})
+        if isinstance(fov_box, dict) and "observer_key" in fov_box:
+            return self._normalize_observer_key(fov_box.get("observer_key"))
+        return "Earth"
+
+    def _update_los_scene_label(self) -> None:
+        text = f"Observer LOS: {self._current_los_label()}"
+        self._los_label_text = text
+        try:
+            self.add_text(
+                text,
+                position="upper_left",
+                font_size=10,
+                color="black",
+                name="observer_los_label",
+                shadow=False,
+            )
+        except Exception:
+            pass
+
+    def _apply_startup_los_view(self) -> None:
+        self.set_camera_to_LOS_direction()
+        self.reset_camera_clipping_range()
+        self.render()
+        # Some platforms defer first paint; trigger a repaint to avoid waiting
+        # for manual mouse interaction before the scene stabilizes.
+        window = getattr(self, "app_window", None)
+        if window is not None:
+            try:
+                window.repaint()
+            except Exception:
+                pass
+
+    def schedule_startup_los_view(self) -> None:
+        # Run after Qt has realized the window size so LoS framing matches the
+        # manual "LoS" toolbar action behavior.
+        QTimer.singleShot(0, self._apply_startup_los_view)
+        # A second pass catches late size/layout updates and removes startup jitter.
+        QTimer.singleShot(120, self._apply_startup_los_view)
+
+    def ensure_window_visible(self) -> None:
+        window = getattr(self, "app_window", None)
+        if window is None:
+            return
+        try:
+            handle = window.windowHandle()
+            screen = handle.screen() if handle is not None else None
+        except Exception:
+            screen = None
+        if screen is None:
+            try:
+                screen = QGuiApplication.screenAt(window.frameGeometry().center())
+            except Exception:
+                screen = None
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        try:
+            avail = screen.availableGeometry()
+            if not avail.isValid():
+                return
+            frame = window.frameGeometry()
+            width = min(max(frame.width(), 900), max(900, int(avail.width() * 0.92)))
+            height = min(max(frame.height(), 650), max(650, int(avail.height() * 0.92)))
+            left = frame.left()
+            top = frame.top()
+            if top < avail.top() or top > avail.bottom() - 80 or left > avail.right() - 80 or left < avail.left():
+                left = avail.left() + max(0, (avail.width() - width) // 2)
+                top = avail.top() + max(0, (avail.height() - height) // 2)
+            else:
+                left = min(max(left, avail.left()), max(avail.left(), avail.right() - width + 1))
+                top = min(max(top, avail.top()), max(avail.top(), avail.bottom() - height + 1))
+            window.resize(width, height)
+            window.move(left, top)
+        except Exception:
+            return
+
+    def _install_embedded_close_hook(self) -> None:
+        if self.session_mode != "embedded":
+            return
+        if self._close_hook_installed:
+            return
+        window = getattr(self, "app_window", None)
+        if window is None:
+            return
+        original_close_event = window.closeEvent
+
+        def _wrapped_close_event(event):
+            # Treat system-window close as "Cancel" for embedded mode.
+            if self._embedded_close_mode is None:
+                if self.parent is not None and hasattr(self.parent, "cancel_live_3d_edits"):
+                    try:
+                        self.parent.cancel_live_3d_edits()
+                    except Exception:
+                        pass
+            try:
+                original_close_event(event)
+            finally:
+                self._embedded_close_mode = None
+
+        window.closeEvent = _wrapped_close_event
+        self._close_hook_installed = True
 
 
     def add_parallel_projection_button(self):
@@ -705,6 +869,69 @@ class MagFieldViewer(BackgroundPlotter):
             return
         self._restore_line_seeds(line_seeds)
 
+    def _model_stage_tag(self):
+        meta = self.box.b3d.get("metadata", {}) if isinstance(getattr(self.box, "b3d", None), dict) else {}
+        model_id = _decode_seed_value(meta.get("id", "")).upper() if isinstance(meta, dict) else ""
+        for suffix in (
+            ".POT.GEN.CHR", ".NAS.GEN.CHR",
+            ".POT.CHR", ".NAS.CHR",
+            ".POT.GEN", ".NAS.GEN",
+            ".NAS", ".BND", ".POT", ".NONE",
+        ):
+            if model_id.endswith(suffix):
+                return suffix[1:]
+        return ""
+
+    def _has_usable_streamline_field(self):
+        b3d = getattr(self.box, "b3d", None)
+        if not isinstance(b3d, dict):
+            return False
+        field_group = b3d.get(self.b3dtype)
+        if not isinstance(field_group, dict):
+            return False
+        attrs = field_group.get("attrs", {}) if isinstance(field_group.get("attrs"), dict) else {}
+        model_type = _decode_seed_value(attrs.get("model_type", "")).strip().lower()
+        if model_type == "none":
+            return False
+        if self._model_stage_tag() == "NONE":
+            return False
+        try:
+            bx = np.asarray(field_group["bx"])
+            by = np.asarray(field_group["by"])
+            bz = np.asarray(field_group["bz"])
+        except Exception:
+            return False
+        if bx.size == 0 or by.size == 0 or bz.size == 0:
+            return False
+        return bool(np.any(bx) or np.any(by) or np.any(bz))
+
+    def _apply_streamline_control_state(self):
+        enabled = self._has_usable_streamline_field()
+        self._streamline_controls_enabled = enabled
+        reason = None if enabled else "Field-line seeding is unavailable for NONE/no-field boxes."
+        for widget in (
+            self.field_lines_control_group,
+            self.sphere_control_group,
+            self.add_sphere_button,
+            self.delete_sphere_button,
+            self.clear_sphere_button,
+            self.viz_sphere_button,
+            self.tree_view,
+            self.center_x_input,
+            self.center_y_input,
+            self.center_z_input,
+            self.radius_input,
+            self.n_points_input,
+            self.lock_z_checkbox,
+        ):
+            if widget is None:
+                continue
+            widget.setEnabled(enabled)
+            if reason:
+                widget.setToolTip(reason)
+        if not enabled and self.spheres:
+            self._on_clear_spheres()
+
     def add_widgets_to_window(self):
         """
         Adds the input widgets to the window.
@@ -743,6 +970,7 @@ class MagFieldViewer(BackgroundPlotter):
         body_layout.addWidget(right_panel, 2)
 
         field_lines_control_group = QGroupBox("Field Line Browser")
+        self.field_lines_control_group = field_lines_control_group
         field_lines_control_layout = QHBoxLayout()
         field_lines_control_layout.setSpacing(12)
         field_lines_control_group.setLayout(field_lines_control_layout)
@@ -824,6 +1052,7 @@ class MagFieldViewer(BackgroundPlotter):
         # Add widgets to the layout
         # Slice Control Group
         sphere_control_group = QGroupBox("Sphere")
+        self.sphere_control_group = sphere_control_group
         sphere_control_layout = QGridLayout()
         sphere_control_layout.setHorizontalSpacing(8)
         sphere_control_layout.setVerticalSpacing(12)
@@ -1027,13 +1256,13 @@ class MagFieldViewer(BackgroundPlotter):
         base_control_layout.addWidget(self.base_map_checkbox, 3, 0, 1, 2)
 
         self.model_box_checkbox = QCheckBox("Show Model Box")
-        self.model_box_checkbox.setChecked(False)
+        self.model_box_checkbox.setChecked(True)
         self.model_box_checkbox.setToolTip("Hide or show the red wireframe 3D model box.")
         self.model_box_checkbox.stateChanged.connect(self.toggle_model_box_visibility)
         base_control_layout.addWidget(self.model_box_checkbox, 4, 0, 1, 2)
 
         self.fov_box_checkbox = QCheckBox("Show FOV Box")
-        self.fov_box_checkbox.setChecked(False)
+        self.fov_box_checkbox.setChecked(True)
         self.fov_box_checkbox.setToolTip("Hide or show the blue observer-aligned 3D FOV box.")
         self.fov_box_checkbox.stateChanged.connect(self.toggle_fov_box_visibility)
         base_control_layout.addWidget(self.fov_box_checkbox, 5, 0, 1, 2)
@@ -1107,6 +1336,9 @@ class MagFieldViewer(BackgroundPlotter):
         """
         Adds a new sphere to the viewer and tree view, hiding the current sphere.
         """
+        if not self._streamline_controls_enabled:
+            print("Sphere controls are disabled for this box because no volumetric field is available.")
+            return
         # Create a new sphere and its streamlines
         if self.current_sphere_id in self.spheres:
             self.spheres[self.current_sphere_id]['sphere_actor'].Off()
@@ -1595,7 +1827,7 @@ class MagFieldViewer(BackgroundPlotter):
         self.grid['by'] = by.ravel(order='F')
         self.grid['bz'] = bz.ravel(order='F')
         self.grid['vectors'] = np.c_[self.grid['bx'] , self.grid['by'], self.grid['bz']]
-        self.scalar_selector_items = ['none', 'bx', 'by', 'bz']
+        self.scalar_selector_items = ['bx', 'by', 'bz']
 
         self.grid_bottom = pv.ImageData()
         self.grid_bottom.dimensions = (len(x), len(y), 1)
@@ -1793,13 +2025,10 @@ class MagFieldViewer(BackgroundPlotter):
             self.update_plane_visibility(current_params['plane_visible'])
 
         if current_params['model_box_visible'] != self.previous_params.get('model_box_visible') or init:
-            self.update_model_box(current_params['model_box_visible'])
+            self.update_model_box(current_params['model_box_visible'], do_render=False)
 
-        if current_params['fov_box_visible'] != self.previous_params.get('fov_box_visible') or \
-                current_params['base_map'] != self.previous_params.get('base_map') or \
-                current_params['base_map_visible'] != self.previous_params.get('base_map_visible') or \
-                init:
-            self.update_fov_box(current_params['fov_box_visible'])
+        if current_params['fov_box_visible'] != self.previous_params.get('fov_box_visible') or init:
+            self.update_fov_box(current_params['fov_box_visible'], do_render=False)
 
         if not init:
             if current_params['center_x'] != self.previous_params.get('center_x') or \
@@ -1820,6 +2049,7 @@ class MagFieldViewer(BackgroundPlotter):
         # self.plotter.show()
         self.updating_flag = False  # Reset the flag
         self.reset_camera_clipping_range()
+        self.render()
 
     def update_slice(self, slice_axis, slice_z, scalar, vmin, vmax, use_interp=True, slice_visible=True):
         """
@@ -1836,7 +2066,7 @@ class MagFieldViewer(BackgroundPlotter):
         :param vmax: float
             The maximum value for the color scale.
         """
-        if (not slice_visible) or scalar == 'none':
+        if not slice_visible:
             if self.bottom_slice_actor is not None:
                 self.remove_actor(self.bottom_slice_actor)
                 self.bottom_slice_actor = None
@@ -2015,161 +2245,20 @@ class MagFieldViewer(BackgroundPlotter):
         mesh.lines = np.asarray(line_cells, dtype=np.int32)
         return mesh
 
-    @staticmethod
-    def _corners_from_bounds(xmin, xmax, ymin, ymax, zmin, zmax):
-        return np.asarray(
-            [
-                [xmin, ymin, zmin],
-                [xmax, ymin, zmin],
-                [xmin, ymax, zmin],
-                [xmax, ymax, zmin],
-                [xmin, ymin, zmax],
-                [xmax, ymin, zmax],
-                [xmin, ymax, zmax],
-                [xmax, ymax, zmax],
-            ],
-            dtype=float,
-        )
-
     def _model_box_mesh(self):
-        corners = self._corners_from_bounds(
-            self.grid_xmin,
-            self.grid_xmax,
-            self.grid_ymin,
-            self.grid_ymax,
-            self.grid_zmin,
-            self.grid_zmax,
-        )
+        corners = self.box.model_box_corners_local_mm()
         return self._wireframe_box_from_points(corners)
 
     def _fov_box_corners_local(self):
-        observer_meta = self.box.b3d.get("observer", {}) if isinstance(self.box.b3d, dict) else {}
-        if not isinstance(observer_meta, dict):
-            observer_meta = {}
-
-        def _meta_float(container, key):
-            try:
-                return float(container[key])
-            except Exception:
-                return None
-
-        frame_obs = getattr(self.box, "_frame_obs", None)
-        box_frame = getattr(getattr(self.box, "_center", None), "frame", None)
-        observer = getattr(frame_obs, "observer", None)
-        obstime = getattr(frame_obs, "obstime", None)
-        if observer is None and box_frame is not None:
-            observer = getattr(box_frame, "observer", None)
-        if obstime is None and box_frame is not None:
-            obstime = getattr(box_frame, "obstime", None)
-        if box_frame is None or observer is None:
-            print("FOV box overlay: missing box observer/frame context.")
+        corners = self.box.fov_box_corners_local_mm()
+        if corners is None:
+            observer_meta = self.box.b3d.get("observer", {}) if isinstance(self.box.b3d, dict) else {}
+            fov_box = observer_meta.get("fov_box") if isinstance(observer_meta, dict) else None
+            if not isinstance(fov_box, dict):
+                print("FOV box overlay: missing observer['fov_box'] metadata.")
+            else:
+                print("FOV box overlay: incomplete or invalid observer['fov_box'] metadata.")
             return None
-
-        frame_hpc = Helioprojective(observer=observer, obstime=obstime)
-
-        fov_box = observer_meta.get("fov_box")
-        fov_2d = observer_meta.get("fov")
-        xc = yc = xsize = ysize = zmin = zmax = None
-
-        if isinstance(fov_box, dict):
-            xc = _meta_float(fov_box, "xc_arcsec")
-            yc = _meta_float(fov_box, "yc_arcsec")
-            xsize = _meta_float(fov_box, "xsize_arcsec")
-            ysize = _meta_float(fov_box, "ysize_arcsec")
-            zmin = _meta_float(fov_box, "zmin_mm")
-            zmax = _meta_float(fov_box, "zmax_mm")
-
-        if any(v is None for v in (xc, yc, xsize, ysize)) and isinstance(fov_2d, dict):
-            if xc is None:
-                xc = _meta_float(fov_2d, "xc_arcsec")
-            if yc is None:
-                yc = _meta_float(fov_2d, "yc_arcsec")
-            if xsize is None:
-                xsize = _meta_float(fov_2d, "xsize_arcsec")
-            if ysize is None:
-                ysize = _meta_float(fov_2d, "ysize_arcsec")
-
-        # Final x/y fallback: use the projected model-box footprint itself.
-        if any(v is None for v in (xc, yc, xsize, ysize)):
-            try:
-                bounds_hpc = self.box.bounds_coords.transform_to(frame_hpc)
-                tx = np.asarray(bounds_hpc.Tx.to_value(u.arcsec), dtype=float).ravel()
-                ty = np.asarray(bounds_hpc.Ty.to_value(u.arcsec), dtype=float).ravel()
-                if tx.size >= 2 and ty.size >= 2:
-                    xmin = float(np.nanmin(tx))
-                    xmax = float(np.nanmax(tx))
-                    ymin = float(np.nanmin(ty))
-                    ymax = float(np.nanmax(ty))
-                    if xc is None:
-                        xc = 0.5 * (xmin + xmax)
-                    if yc is None:
-                        yc = 0.5 * (ymin + ymax)
-                    if xsize is None:
-                        xsize = max(1e-6, xmax - xmin)
-                    if ysize is None:
-                        ysize = max(1e-6, ymax - ymin)
-            except Exception:
-                pass
-
-        # z fallback: derive observer-LOS depth from the model box and pad by 10%.
-        if zmin is None or zmax is None:
-            try:
-                frame_hcc_obs = Heliocentric(observer=observer, obstime=obstime)
-                zz = []
-                for edge in self.box.all_edges:
-                    edge_hcc = edge.transform_to(frame_hcc_obs)
-                    zz.extend(np.asarray(edge_hcc.z.to_value(u.Mm), dtype=float).ravel().tolist())
-                z_arr = np.asarray(zz, dtype=float)
-                z_arr = z_arr[np.isfinite(z_arr)]
-                if z_arr.size > 0:
-                    base_min = float(np.nanmin(z_arr))
-                    base_max = float(np.nanmax(z_arr))
-                    span = max(1e-3, base_max - base_min)
-                    pad = 0.10 * span
-                    if zmin is None:
-                        zmin = base_min - pad
-                    if zmax is None:
-                        zmax = base_max + pad
-            except Exception:
-                pass
-
-        if any(v is None for v in (xc, yc, xsize, ysize, zmin, zmax)):
-            print("FOV box overlay: incomplete observer FOV metadata and no geometry fallback available.")
-            return None
-
-        xsize = max(1e-6, float(xsize))
-        ysize = max(1e-6, float(ysize))
-
-        try:
-            dsun = float(observer.radius.to_value(u.Mm))
-        except Exception:
-            print("FOV box overlay: observer distance is unavailable.")
-            return None
-
-        half_w = 0.5 * xsize
-        half_h = 0.5 * ysize
-        corners = []
-        for z_mm in (zmin, zmax):
-            distance_mm = dsun - z_mm
-            if not np.isfinite(distance_mm) or distance_mm <= 0:
-                print("FOV box overlay: invalid LOS distance derived from z extent.")
-                return None
-            for ty in (yc - half_h, yc + half_h):
-                for tx in (xc - half_w, xc + half_w):
-                    coord_hpc = SkyCoord(
-                        Tx=tx * u.arcsec,
-                        Ty=ty * u.arcsec,
-                        distance=distance_mm * u.Mm,
-                        frame=frame_hpc,
-                    )
-                    coord_local = coord_hpc.transform_to(box_frame)
-                    corners.append(
-                        [
-                            float(coord_local.x.to_value(u.Mm)),
-                            float(coord_local.y.to_value(u.Mm)),
-                            float(coord_local.z.to_value(u.Mm)) - float(self.grid_zbase),
-                        ]
-                    )
         return np.asarray(corners, dtype=float)
 
     def _fov_box_mesh(self):
@@ -2178,71 +2267,68 @@ class MagFieldViewer(BackgroundPlotter):
             return None
         return self._wireframe_box_from_points(corners)
 
-    def update_model_box(self, visible=True):
-        if (not visible):
-            if self.model_box_actor is not None:
-                self.remove_actor(self.model_box_actor)
-                self.model_box_actor = None
-                self.render()
-            return
+    def update_model_box(self, visible=True, do_render=True):
         mesh = self._model_box_mesh()
         if mesh is None:
             if self.model_box_actor is not None:
                 self.remove_actor(self.model_box_actor)
                 self.model_box_actor = None
-                self.render()
+                if do_render:
+                    self.render()
             return
-        if self.model_box_actor is not None:
-            self.remove_actor(self.model_box_actor)
-        self.model_box_actor = self.add_mesh(
-            mesh.tube(radius=0.35),
-            color="red",
-            pickable=False,
-            reset_camera=False,
-            lighting=False,
-        )
-        self.render()
+        if self.model_box_actor is None:
+            self.model_box_actor = self.add_mesh(
+                mesh.tube(radius=0.35),
+                color="red",
+                pickable=False,
+                reset_camera=False,
+                lighting=False,
+            )
+        self.model_box_actor.SetVisibility(bool(visible))
+        if do_render:
+            self.render()
 
-    def update_fov_box(self, visible=True):
-        if (not visible):
-            if self.fov_box_actor is not None:
-                self.remove_actor(self.fov_box_actor)
-                self.fov_box_actor = None
-                self.render()
-            return
+    def update_fov_box(self, visible=True, do_render=True):
         mesh = self._fov_box_mesh()
         if mesh is None:
-            print("FOV box overlay: no valid FOV-box mesh could be built from observer metadata.")
             if self.fov_box_actor is not None:
                 self.remove_actor(self.fov_box_actor)
                 self.fov_box_actor = None
-                self.render()
+                if do_render:
+                    self.render()
             return
-        if self.fov_box_actor is not None:
-            self.remove_actor(self.fov_box_actor)
-        self.fov_box_actor = self.add_mesh(
-            mesh.tube(radius=0.35),
-            color="deepskyblue",
-            pickable=False,
-            reset_camera=False,
-            scalars=None,
-            lighting=False,
-        )
-        self.render()
+        if self.fov_box_actor is None:
+            self.fov_box_actor = self.add_mesh(
+                mesh.tube(radius=0.35),
+                color="deepskyblue",
+                pickable=False,
+                reset_camera=False,
+                scalars=None,
+                lighting=False,
+            )
+        self.fov_box_actor.SetVisibility(bool(visible))
+        if do_render:
+            self.render()
 
     def create_streamlines(self, center_x, center_y, center_z, radius, n_points):
         self.streamlines = self.grid.streamlines(vectors='vectors', source_center=(center_x, center_y, center_z),
                                                  source_radius=radius, n_points=n_points, integration_direction='both',
-                                                 max_time=5000, progress_bar=False)
+                                                 max_length=5000, progress_bar=False)
         if self.streamlines.n_points > 0:
+            tube = self.streamlines.tube(radius=0.1)
+            if tube.n_points <= 0:
+                self.streamlines_actor = None
+                print("No streamlines generated.")
+                return
             if self.streamlines_actor is None:
-                self.streamlines_actor = self.add_mesh(self.streamlines.tube(radius=0.1), pickable=False,
+                self.streamlines_actor = self.add_mesh(tube, pickable=False,
                                                        reset_camera=False, show_scalar_bar=False)
             else:
                 self.remove_actor(self.streamlines_actor)
-                self.streamlines_actor = self.add_mesh(self.streamlines.tube(radius=0.1), pickable=False,
+                self.streamlines_actor = self.add_mesh(tube, pickable=False,
                                                        reset_camera=False, show_scalar_bar=False)
         else:
+            self.streamlines_actor = None
             print("No streamlines generated.")
 
     def update_streamlines(self, center_x, center_y, center_z, radius, n_points):
@@ -2264,18 +2350,28 @@ class MagFieldViewer(BackgroundPlotter):
         streamlines_actor = sphere['streamlines_actor']
         streamlines = self.grid.streamlines(vectors='vectors', source_center=(center_x, center_y, center_z),
                                             source_radius=radius, n_points=n_points, integration_direction='both',
-                                            max_time=5000, progress_bar=False)
+                                            max_length=5000, progress_bar=False)
         self.spheres[self.current_sphere_id]['streamlines'] = streamlines
         if streamlines.n_points > 0:
+            tube = streamlines.tube(radius=0.1)
+            if tube.n_points <= 0:
+                if streamlines_actor is not None:
+                    self.remove_actor(streamlines_actor)
+                self.spheres[self.current_sphere_id]['streamlines_actor'] = None
+                print("No streamlines generated.")
+                return
             if streamlines_actor is None:
-                streamlines_actor = self.add_mesh(streamlines.tube(radius=0.1), pickable=False,
+                streamlines_actor = self.add_mesh(tube, pickable=False,
                                                   reset_camera=False, show_scalar_bar=False)
             else:
                 self.remove_actor(streamlines_actor)
-                streamlines_actor = self.add_mesh(streamlines.tube(radius=0.1), pickable=False,
+                streamlines_actor = self.add_mesh(tube, pickable=False,
                                                   reset_camera=False, show_scalar_bar=False)
             self.spheres[self.current_sphere_id]['streamlines_actor'] = streamlines_actor
         else:
+            if streamlines_actor is not None:
+                self.remove_actor(streamlines_actor)
+            self.spheres[self.current_sphere_id]['streamlines_actor'] = None
             print("No streamlines generated.")
 
     def update_sphere(self):
@@ -2587,6 +2683,7 @@ class MagFieldViewer(BackgroundPlotter):
                 self._collect_streamlines(),
                 z_base=self.grid_zbase,
             )
+            self._embedded_close_mode = "accept"
             self._close_window()
             return
         if self.session_mode == "pipeline_child":
@@ -2598,6 +2695,7 @@ class MagFieldViewer(BackgroundPlotter):
     def cancel_and_close(self):
         if self.session_mode == "embedded" and self.parent is not None and hasattr(self.parent, "cancel_live_3d_edits"):
             self.parent.cancel_live_3d_edits()
+            self._embedded_close_mode = "cancel"
         self._close_window()
 
     def undo_and_restore(self):
@@ -2638,6 +2736,7 @@ class MagFieldViewer(BackgroundPlotter):
                     chromo["bz"] = bcube[:, :, :, 2]
                     self.box.b3d["chromo"] = chromo
         self.init_grid()
+        self._apply_streamline_control_state()
         self.previous_params = {}
         self.update_plot()
         self._restore_line_seeds_from_box()
