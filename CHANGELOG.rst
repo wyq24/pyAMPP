@@ -30,7 +30,7 @@ Unreleased
 - Added redundant derived ``observer/pb0r`` metadata alongside canonical
   ``observer/ephemeris`` for SSW-style ``B0 / L0 / Rsun`` interoperability.
 
-0.2.0
+1.0.0
 -----
 
 Release focus:
@@ -55,4 +55,4 @@ Highlights:
 
 Packaging/versioning:
 
-- Bumped package version to ``0.2.0`` in packaging metadata.
+- Bumped package version to ``1.0.0`` in packaging metadata.
