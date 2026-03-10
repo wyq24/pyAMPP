@@ -1,5 +1,6 @@
 from os import PathLike
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import astropy.units as u
@@ -139,6 +140,156 @@ def compute_vertical_current(b0: np.ndarray,
     interior = np.where(mask, interior, 0.0)
     jr[1:nx - 1, 1:ny - 1] = interior
     return jr
+
+
+def _decode_sav_refmap_value(v: Any) -> Any:
+    if isinstance(v, (bytes, np.bytes_)):
+        return v.decode("utf-8", "ignore")
+    return v
+
+
+def _sav_refmap_scalar(v: Any) -> Any:
+    arr = np.asarray(v)
+    if arr.shape == ():
+        return arr.item()
+    return arr.flat[0]
+
+
+def _sav_refmap_text(v: Any) -> str:
+    v = _decode_sav_refmap_value(v)
+    if isinstance(v, np.ndarray):
+        if v.shape == ():
+            return str(v.item())
+        if v.size > 0:
+            return str(_decode_sav_refmap_value(v.flat[0]))
+        return ""
+    return str(v)
+
+
+def _sav_box_has_field(box: Any, name: str) -> bool:
+    return name in (getattr(getattr(box, "dtype", None), "names", None) or ())
+
+
+def _build_sav_refmap_wcs_header(
+    data2d: np.ndarray,
+    *,
+    xc: float,
+    yc: float,
+    dx: float,
+    dy: float,
+    date_obs: str,
+    xunits: str,
+    yunits: str,
+    rsun_obs: float | None = None,
+    b0: float | None = None,
+    l0: float | None = None,
+) -> str:
+    ny, nx = data2d.shape
+    header = fits.Header()
+    header["SIMPLE"] = True
+    header["BITPIX"] = -32
+    header["NAXIS"] = 2
+    header["NAXIS1"] = int(nx)
+    header["NAXIS2"] = int(ny)
+    header["CTYPE1"] = "HPLN-TAN"
+    header["CTYPE2"] = "HPLT-TAN"
+    header["CUNIT1"] = xunits if xunits else "arcsec"
+    header["CUNIT2"] = yunits if yunits else "arcsec"
+    header["CRPIX1"] = (nx + 1.0) / 2.0
+    header["CRPIX2"] = (ny + 1.0) / 2.0
+    header["CRVAL1"] = float(xc)
+    header["CRVAL2"] = float(yc)
+    header["CDELT1"] = float(dx)
+    header["CDELT2"] = float(dy)
+    if date_obs:
+        header["DATE-OBS"] = date_obs
+        header["DATE_OBS"] = date_obs
+    if rsun_obs is not None:
+        header["RSUN_OBS"] = float(rsun_obs)
+    if b0 is not None:
+        header["HGLT_OBS"] = float(b0)
+    if l0 is not None:
+        header["HGLN_OBS"] = float(l0)
+    return header.tostring(sep="\n", endcard=True)
+
+
+def extract_sav_refmaps(box: Any) -> list[tuple[int, str, np.ndarray, str]]:
+    """
+    Extract GX/IDL BOX.REFMAPS into ordered HDF5-style payloads.
+    """
+    out: list[tuple[int, str, np.ndarray, str]] = []
+    if not _sav_box_has_field(box, "REFMAPS"):
+        return out
+
+    try:
+        refmaps_obj = box["REFMAPS"][0]
+        omap = refmaps_obj["OMAP"][0]
+        pointer = omap["POINTER"][0]
+        ids = np.asarray(pointer["IDS"], dtype=object).ravel()
+        ptrs = np.asarray(pointer["PTRS"], dtype=object).ravel()
+    except Exception:
+        return out
+
+    used_names: dict[str, int] = {}
+    order_index = 0
+    for slot_id, entry in zip(ids, ptrs):
+        if entry is None:
+            continue
+        slot_text = _sav_refmap_text(slot_id).strip()
+        if not slot_text:
+            continue
+        try:
+            rec = np.asarray(entry).reshape(-1)[0]
+            names = rec.dtype.names or ()
+        except Exception:
+            continue
+        if "DATA" not in names:
+            continue
+
+        data = np.asarray(rec["DATA"], dtype=np.float32)
+        if data.shape and data.shape[0] == 1:
+            data = np.asarray(data[0], dtype=np.float32)
+        if data.ndim != 2:
+            continue
+
+        map_id = _sav_refmap_text(rec["ID"]) if "ID" in names else slot_text
+        map_id = map_id.strip() if map_id else slot_text
+        if not map_id:
+            map_id = f"refmap_{slot_text}"
+
+        base_name = map_id
+        idx = used_names.get(base_name, 0)
+        used_names[base_name] = idx + 1
+        if idx > 0:
+            map_id = f"{base_name}_{idx}"
+
+        xc = float(_sav_refmap_scalar(rec["XC"])) if "XC" in names else 0.0
+        yc = float(_sav_refmap_scalar(rec["YC"])) if "YC" in names else 0.0
+        dx = float(_sav_refmap_scalar(rec["DX"])) if "DX" in names else 1.0
+        dy = float(_sav_refmap_scalar(rec["DY"])) if "DY" in names else 1.0
+        date_obs = _sav_refmap_text(rec["TIME"]) if "TIME" in names else ""
+        xunits = _sav_refmap_text(rec["XUNITS"]).strip() if "XUNITS" in names else "arcsec"
+        yunits = _sav_refmap_text(rec["YUNITS"]).strip() if "YUNITS" in names else "arcsec"
+        rsun_obs = float(_sav_refmap_scalar(rec["RSUN"])) if "RSUN" in names else None
+        b0 = float(_sav_refmap_scalar(rec["B0"])) if "B0" in names else None
+        l0 = float(_sav_refmap_scalar(rec["L0"])) if "L0" in names else None
+
+        wcs_header = _build_sav_refmap_wcs_header(
+            data,
+            xc=xc,
+            yc=yc,
+            dx=dx,
+            dy=dy,
+            date_obs=date_obs,
+            xunits=xunits,
+            yunits=yunits,
+            rsun_obs=rsun_obs,
+            b0=b0,
+            l0=l0,
+        )
+        out.append((order_index, map_id, data, wcs_header))
+        order_index += 1
+    return out
 
 
 def remap_vertical_current_inputs(

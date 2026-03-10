@@ -13,6 +13,7 @@ import numpy as np
 from astropy.io import fits
 from scipy.io import readsav
 
+from pyampp.gxbox.boxutils import extract_sav_refmaps
 from pyampp.gxbox.gx_box2id import gx_box2id
 
 
@@ -311,7 +312,7 @@ def build_h5_from_sav(sav_path: Path, out_h5: Path, template_h5: Path | None = N
     index = box["INDEX"][0] if _has_field(box, "INDEX") else None
 
     base = box["BASE"][0] if _has_field(box, "BASE") else None
-    refmaps = _extract_refmaps_from_box(box)
+    refmaps = extract_sav_refmaps(box)
     dr = np.asarray(_field(box, "DR", [1.0, 1.0, 1.0]), dtype=np.float64)
 
     bcube_czyx = _normalize_czyx_from_components_or_bcube(box)

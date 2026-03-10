@@ -36,6 +36,7 @@ from pyampp.gx_chromo.combo_model import combo_model
 from pyampp.gx_chromo.decompose import decompose
 from pyampp.gxbox.box import Box
 from pyampp.gxbox.boxutils import (
+    extract_sav_refmaps,
     hmi_b2ptr,
     hmi_disambig,
     read_b3d_h5,
@@ -1108,6 +1109,41 @@ def _build_index_header(
     return header.tostring(sep="\n", endcard=True)
 
 
+def _refmap_wcs_header(smap: Map) -> str:
+    """
+    Persist enough FITS-WCS metadata to preserve the map timestamp and basic
+    solar observer context across HDF5 save/load cycles.
+    """
+    header = smap.wcs.to_header()
+    try:
+        date_obs = Time(smap.date).isot if getattr(smap, "date", None) is not None else None
+        if date_obs:
+            header["DATE-OBS"] = date_obs
+            header["DATE_OBS"] = date_obs
+    except Exception:
+        pass
+    try:
+        if getattr(smap, "rsun_obs", None) is not None:
+            header["RSUN_OBS"] = float(u.Quantity(smap.rsun_obs).to_value(u.arcsec))
+    except Exception:
+        pass
+    try:
+        if getattr(smap, "rsun_meters", None) is not None:
+            header["RSUN_REF"] = float(u.Quantity(smap.rsun_meters).to_value(u.m))
+    except Exception:
+        pass
+    try:
+        obs = getattr(smap, "observer_coordinate", None)
+        obs_time = getattr(smap, "date", None)
+        if obs is not None and obs_time is not None:
+            obs_hgs = obs.transform_to(HeliographicStonyhurst(obstime=obs_time))
+            header["HGLN_OBS"] = float(obs_hgs.lon.to_value(u.deg))
+            header["HGLT_OBS"] = float(obs_hgs.lat.to_value(u.deg))
+    except Exception:
+        pass
+    return header.tostring(sep="\n", endcard=True)
+
+
 def _print_info(cfg: Fov2BoxConfig) -> None:
     resolved_reduce_passed = cfg.reduce_passed if cfg.reduce_passed is not None else (0 if cfg.center_vox else 1)
     resolved_chromo_level = (1000.0 / float(cfg.dx_km)) if cfg.dx_km else 1.0
@@ -1194,32 +1230,41 @@ def _load_hmi_maps_from_downloader(
 ) -> tuple[Dict[str, Map], dict]:
     import time as time_mod
 
+    def _missing_items(report: dict[str, Any], *categories: str) -> list[str]:
+        missing: list[str] = []
+        for category in categories:
+            items = report.get(category, {}) if isinstance(report, dict) else {}
+            if isinstance(items, dict):
+                missing.extend([k for k, exists in items.items() if not exists])
+        return missing
+
+    requested_time = Time(time)
     downloader = SDOImageDownloader(
         time,
         data_dir=str(data_dir),
-        euv=euv,
-        uv=uv,
+        euv=False,
+        uv=False,
         hmi=True,
         backend=download_backend,
         force_download=force_download,
     )
-    missing_before = []
-    if downloader.existence_report:
-        for category in ("hmi_b", "hmi_m", "hmi_ic"):
-            items = downloader.existence_report.get(category, {})
-            missing_before.extend([k for k, exists in items.items() if not exists])
+    missing_before = _missing_items(downloader.existence_report, "hmi_b", "hmi_m", "hmi_ic")
     t0 = time_mod.perf_counter()
-    files = downloader.download_images()
-    elapsed = time_mod.perf_counter() - t0
+    files = dict(downloader.download_images())
+    hmi_elapsed = time_mod.perf_counter() - t0
     downloaded = force_download or len(missing_before) > 0
     required = ["field", "inclination", "azimuth", "disambig", "continuum", "magnetogram"]
     missing = [k for k in required if not files.get(k)]
     if missing and strict_required:
         raise RuntimeError(f"Missing required HMI files: {missing}")
-    if not strict_required:
+    if missing and not strict_required:
         info = {
+            "requested_obs_time": requested_time.isot,
+            "resolved_obs_time": None,
             "downloaded": downloaded,
-            "elapsed": elapsed,
+            "elapsed": hmi_elapsed,
+            "hmi_elapsed": hmi_elapsed,
+            "context_elapsed": 0.0,
             "missing_before": missing_before,
             "missing_after": missing,
             "files": files,
@@ -1243,6 +1288,30 @@ def _load_hmi_maps_from_downloader(
         "continuum": map_conti,
         "magnetogram": map_losma,
     }
+    resolved_obs_time = Time(map_field.date) if getattr(map_field, "date", None) is not None else requested_time
+
+    context_elapsed = 0.0
+    if euv or uv:
+        context_downloader = SDOImageDownloader(
+            resolved_obs_time,
+            data_dir=str(data_dir),
+            euv=euv,
+            uv=uv,
+            hmi=False,
+            backend=download_backend,
+            force_download=force_download,
+        )
+        context_missing_before = _missing_items(context_downloader.existence_report, "euv", "uv")
+        missing_before.extend(context_missing_before)
+        t0 = time_mod.perf_counter()
+        context_files = context_downloader.download_images()
+        context_elapsed = time_mod.perf_counter() - t0
+        downloaded = downloaded or force_download or len(context_missing_before) > 0
+        for key, path in context_files.items():
+            if key in required:
+                continue
+            files[key] = path
+
     for key, path in files.items():
         if key in ("field", "inclination", "azimuth", "disambig", "continuum", "magnetogram"):
             continue
@@ -1251,7 +1320,16 @@ def _load_hmi_maps_from_downloader(
         except Exception:
             # Skip optional context channels that cannot be loaded.
             continue
-    info = {"downloaded": downloaded, "elapsed": elapsed, "missing_before": missing_before}
+    info = {
+        "requested_obs_time": requested_time.isot,
+        "resolved_obs_time": resolved_obs_time.isot,
+        "downloaded": downloaded,
+        "elapsed": hmi_elapsed + context_elapsed,
+        "hmi_elapsed": hmi_elapsed,
+        "context_elapsed": context_elapsed,
+        "missing_before": missing_before,
+        "files": files,
+    }
     return maps, info
 
 
@@ -1513,6 +1591,12 @@ def _load_entry_box_any(entry_path: Path) -> Dict[str, Any]:
             chromo["bz"] = _sav_cube_to_internal_xyz(cbc[2], ny, nx)
     if chromo:
         out["chromo"] = chromo
+
+    refmaps = {}
+    for _order_index, map_id, map_data, map_header in extract_sav_refmaps(box):
+        refmaps[map_id] = {"data": map_data, "wcs_header": map_header}
+    if refmaps:
+        out["refmaps"] = refmaps
 
     sid = _decode_sav_value(box["ID"]) if "ID" in names else entry_path.stem
     execute = _decode_sav_value(box["EXECUTE"]) if "EXECUTE" in names else ""
@@ -1823,8 +1907,9 @@ def main(
     logging.getLogger("reproject").setLevel(logging.WARNING)
     logging.getLogger("sunpy").setLevel(logging.WARNING)
 
-    obs_time, box_dims_resolved, dx_km = _resolve_box_params(cfg)
+    requested_obs_time, box_dims_resolved, dx_km = _resolve_box_params(cfg)
     cfg.dx_km = dx_km
+    obs_time = requested_obs_time
     resume_mode = bool(cfg.entry_box and not cfg.rebuild and entry_loaded is not None)
 
     if not resume_mode:
@@ -1974,6 +2059,16 @@ def main(
         )
         dl_elapsed = time_mod.perf_counter() - dl_t0
         print(f"Done in {dl_elapsed:.2f}s")
+        resolved_obs_time = download_info.get("resolved_obs_time")
+        if resolved_obs_time:
+            resolved_obs_time = Time(resolved_obs_time)
+            if abs((resolved_obs_time - requested_obs_time).to_value("sec")) > 1.0:
+                print(
+                    "Resolved source bundle time: "
+                    f"{resolved_obs_time.isot} "
+                    f"(requested {requested_obs_time.isot})"
+                )
+            obs_time = resolved_obs_time
         if _last_stage_tag(cfg.stop_after) == "DL":
             print("Stopped after download stage by request.")
             total = time_mod.perf_counter() - t_start
@@ -2101,9 +2196,7 @@ def main(
         refmaps = {}
         def add_refmap(ref_id: str, smap: Map) -> None:
             smap = submap_with_fov(smap)
-            # Use WCS header only to avoid non-ASCII FITS meta from some sources.
-            header = smap.wcs.to_header()
-            refmaps[ref_id] = {"data": smap.data, "wcs_header": header.tostring(sep="\\n", endcard=True)}
+            refmaps[ref_id] = {"data": smap.data, "wcs_header": _refmap_wcs_header(smap)}
 
         def _collect_refmaps():
             import time as time_mod
@@ -2118,7 +2211,7 @@ def main(
                 vc_bx_local, vc_by_local, vc_bz_local = remap_vertical_current_inputs(
                     map_bx, map_by, map_bz
                 )
-                vc_header_local = vc_bx_local.wcs.to_header().tostring(sep="\\n", endcard=True)
+                vc_header_local = _refmap_wcs_header(vc_bx_local)
                 rsun_arcsec_local = vc_bx_local.rsun_obs.to_value(u.arcsec)
                 crpix1_local, crpix2_local = vc_bx_local.wcs.wcs.crpix
                 cdelt1_local = vc_bx_local.scale.axis1.to_value(u.arcsec / u.pix)
