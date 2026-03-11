@@ -29,7 +29,6 @@ from scipy.io import readsav
 from sunpy.coordinates import (Heliocentric, HeliographicCarrington, HeliographicStonyhurst,
                                Helioprojective, get_earth)
 from sunpy.map import Map
-from sunpy.sun import constants as sun_consts
 
 from pyampp.data.downloader import SDOImageDownloader
 from pyampp.gx_chromo.combo_model import combo_model
@@ -43,8 +42,10 @@ from pyampp.gxbox.boxutils import (
     write_b3d_h5,
     compute_vertical_current,
     load_sunpy_map_compat,
+    map_from_data_header_compat,
     normalize_observer_metadata,
     remap_vertical_current_inputs,
+    serialize_sav_index_header,
 )
 from pyampp.gxbox.gx_box2id import gx_box2id
 from pyampp.gxbox.observer_restore import (
@@ -52,7 +53,13 @@ from pyampp.gxbox.observer_restore import (
     normalize_observer_key,
     resolve_named_observer,
 )
-from pyampp.util.config import DOWNLOAD_DIR, GXMODEL_DIR, AIA_EUV_PASSBANDS, AIA_UV_PASSBANDS
+from pyampp.util.config import (
+    DOWNLOAD_DIR,
+    GXMODEL_DIR,
+    AIA_EUV_PASSBANDS,
+    AIA_UV_PASSBANDS,
+    IDL_HMI_RSUN_M,
+)
 
 
 app = typer.Typer(help="Run gx_fov2box pipeline without GUI and save model stages.")
@@ -1044,11 +1051,37 @@ def _build_index_header(
     by legacy GX Simulator routines.
     """
     header = fits.Header(bottom_wcs_header).copy()
+    date_value = source_map.date if source_map is not None and source_map.date is not None else obs_time_override
 
     # Normalize to IDL-GX conventions used in box.index.
     ctype1 = str(header.get("CTYPE1", ""))
     ctype2 = str(header.get("CTYPE2", ""))
     if ctype1.startswith("HGLN-"):
+        try:
+            if date_value is not None and "CRVAL1" in header and "CRVAL2" in header:
+                rsun_value = rsun_override
+                if rsun_value is None and source_map is not None and getattr(source_map, "rsun_meters", None) is not None:
+                    rsun_value = source_map.rsun_meters
+                if rsun_value is None:
+                    rsun_value = IDL_HMI_RSUN_M * u.m
+                obs_for_carr = observer_override
+                if obs_for_carr is None and source_map is not None:
+                    obs_for_carr = getattr(source_map, "observer_coordinate", None)
+                if obs_for_carr is None:
+                    obs_for_carr = "earth"
+                origin_hgs = SkyCoord(
+                    lon=float(header["CRVAL1"]) * u.deg,
+                    lat=float(header["CRVAL2"]) * u.deg,
+                    radius=u.Quantity(rsun_value).to(u.m),
+                    frame=HeliographicStonyhurst(obstime=date_value),
+                )
+                origin_hgc = origin_hgs.transform_to(
+                    HeliographicCarrington(observer=obs_for_carr, obstime=date_value)
+                )
+                header["CRVAL1"] = float(origin_hgc.lon.to_value(u.deg))
+                header["CRVAL2"] = float(origin_hgc.lat.to_value(u.deg))
+        except Exception:
+            pass
         header["CTYPE1"] = "CRLN-" + ctype1.split("-", 1)[1]
     if ctype2.startswith("HGLT-"):
         header["CTYPE2"] = "CRLT-" + ctype2.split("-", 1)[1]
@@ -1058,7 +1091,6 @@ def _build_index_header(
     header["NAXIS"] = int(header.get("NAXIS", 2))
 
     if source_map is not None or obs_time_override is not None:
-        date_value = source_map.date if source_map is not None and source_map.date is not None else obs_time_override
         date_obs = date_value.isot if date_value is not None else None
         if date_obs:
             header["DATE-OBS"] = date_obs
@@ -1531,7 +1563,7 @@ def _load_entry_box_any(entry_path: Path) -> Dict[str, Any]:
             if "CHROMO_MASK" in bnames:
                 base["chromo_mask"] = np.asarray(base_raw["CHROMO_MASK"])
             if "INDEX" in names:
-                base["index"] = _decode_sav_value(box["INDEX"])
+                base["index"] = serialize_sav_index_header(box["INDEX"][0])
             out["base"] = base
 
     ny = nx = None
@@ -1627,7 +1659,7 @@ def _resolve_box_params(cfg: Fov2BoxConfig) -> Tuple[Time, Tuple[int, int, int],
                             box_dims = tuple(int(v) for v in shape)
                 if "dr" in corona and dx_km == 0:
                     dr3 = corona["dr"]
-                    dx_km = float(dr3[0] * sun_consts.radius.to(u.km).value)
+                    dx_km = float(dr3[0] * (IDL_HMI_RSUN_M * u.m).to(u.km).value)
         if obs_time is None:
             inferred = _infer_time_from_entry_loaded(box_b3d, entry_path)
             if inferred:
@@ -2034,7 +2066,7 @@ def main(
             d = np.asarray(entry_corona_for_dr["dr"], dtype=float).reshape(-1)
             dr3 = np.array([d[0], d[min(1, d.size - 1)], d[min(2, d.size - 1)]], dtype=float)
         else:
-            dr = float((cfg.dx_km * u.km / sun_consts.radius.to(u.km)).value)
+            dr = float((cfg.dx_km * u.km / (IDL_HMI_RSUN_M * u.m).to(u.km)).value)
             dr3 = np.array([dr, dr, dr], dtype=float)
 
         src_id = _decode_id_text(entry_loaded.get("metadata", {}).get("id", "")).strip()
@@ -2076,7 +2108,7 @@ def main(
             return
 
         def _prepare_geometry():
-            rsun_local = u.Quantity(maps["field"].rsun_meters, u.m).to(u.km)
+            rsun_local = (IDL_HMI_RSUN_M * u.m).to(u.km)
             observer_local = _resolve_cli_observer(maps.get("field"), cfg.observer_name, obs_time)
 
             if cfg.hpc:
@@ -2148,7 +2180,7 @@ def main(
 
         # Match GX/IDL base convention: bx := bp, by := -bt, bz := br.
         map_bx = map_bp
-        map_by = Map(-map_bt.data, map_bt.meta)
+        map_by = map_from_data_header_compat(-map_bt.data, map_bt.meta)
         map_bz = map_br
 
         def _reproject_cutouts():
@@ -2637,7 +2669,10 @@ def main(
         chr_stage_tag = f"{stage_prefix}.GEN.CHR"
 
     header = _make_header(maps["field"]) if maps is not None else {}
-    chromo_box = combo_model(nlfff_box, dr3, base_bz_arr.T, base_ic_arr.T)
+    chromo_mask = None
+    if "chromo_mask" in base_group:
+        chromo_mask = np.asarray(base_group["chromo_mask"])
+    chromo_box = combo_model(nlfff_box, dr3, base_bz_arr.T, base_ic_arr.T, chromo_mask=chromo_mask)
     for k in ["codes", "apex_idx", "start_idx", "end_idx", "seed_idx",
               "av_field", "phys_length", "voxel_status"]:
         if lines is not None and k in lines:

@@ -8,6 +8,92 @@ from astropy.io import fits
 from astropy.time import Time
 from sunpy.map import Map, make_fitswcs_header
 
+from pyampp.util.config import IDL_HMI_RSUN_M
+
+
+def _decode_sav_text(value: Any) -> str:
+    if isinstance(value, (bytes, np.bytes_)):
+        return value.decode("utf-8", errors="ignore")
+    return str(value)
+
+
+def _sav_scalar(value: Any) -> Any:
+    arr = np.asarray(value)
+    if arr.shape == ():
+        scalar = arr.item()
+    elif arr.size == 1:
+        scalar = arr.flat[0]
+    else:
+        return None
+    if isinstance(scalar, np.generic):
+        scalar = scalar.item()
+    if isinstance(scalar, (bytes, np.bytes_)):
+        scalar = scalar.decode("utf-8", errors="ignore")
+    return scalar
+
+
+def serialize_sav_index_header(index: Any) -> str:
+    """
+    Convert an IDL FITSHEAD2STRUCT-like INDEX record into FITS header text.
+
+    SAV entry boxes can carry INDEX as a restored IDL struct instead of a plain
+    header string. Stringifying that struct produces an unusable Python tuple
+    repr. This serializer reconstructs a standard FITS-style header payload so
+    HDF5 outputs remain consumable by downstream FITS/WCS readers.
+    """
+    if index is None:
+        return ""
+
+    if isinstance(index, np.ndarray) and index.dtype.names is not None:
+        if index.shape == ():
+            index = index.item()
+        elif index.size == 1:
+            index = index.flat[0]
+    elif isinstance(index, np.void):
+        index = index
+
+    dtype_names = getattr(getattr(index, "dtype", None), "names", None)
+    if not dtype_names:
+        return _decode_sav_text(index)
+
+    header = fits.Header()
+    date_obs_value = None
+    for name in dtype_names:
+        raw = index[name]
+        keyword = name.replace("$", "-")
+        if name == "DATE_D$OBS":
+            # Keep the normalized DATE-OBS aliases rather than inventing a
+            # non-standard long keyword that downstream code does not need.
+            scalar = _sav_scalar(raw)
+            if scalar not in (None, ""):
+                date_obs_value = _decode_sav_text(scalar)
+            continue
+        if name in ("COMMENT", "HISTORY"):
+            for item in np.asarray(raw, dtype=object).reshape(-1):
+                text = _decode_sav_text(_sav_scalar(item) if np.asarray(item).shape == () else item).strip()
+                if not text:
+                    continue
+                if name == "COMMENT":
+                    header.add_comment(text)
+                else:
+                    header.add_history(text)
+            continue
+        scalar = _sav_scalar(raw)
+        if scalar is None:
+            continue
+        if keyword == "SIMPLE":
+            scalar = bool(int(scalar))
+        header[keyword] = scalar
+        if keyword in ("DATE-OBS", "DATE_OBS") and scalar not in ("", None):
+            date_obs_value = _decode_sav_text(scalar)
+
+    if date_obs_value:
+        header["DATE-OBS"] = date_obs_value
+        header["DATE_OBS"] = date_obs_value
+        header["DATE"] = date_obs_value
+
+    return header.tostring(sep="\n", endcard=True)
+
 def _bilinear_sample(arr: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
     x0 = np.floor(x).astype(int)
     y0 = np.floor(y).astype(int)
@@ -357,6 +443,54 @@ def _sanitize_unit_like_header_values(header: fits.Header) -> fits.Header:
     return header
 
 
+def _normalize_gx_header_values(header: fits.Header) -> fits.Header:
+    """
+    Normalize imported FITS/WCS metadata to the GX/HMI solar-radius convention.
+
+    SunPy otherwise falls back to its own photospheric radius when RSUN_REF is
+    missing, which introduces a systematic mismatch with the GX/IDL path.
+    """
+    header = _sanitize_unit_like_header_values(header)
+    header["RSUN_REF"] = float(IDL_HMI_RSUN_M)
+    return header
+
+
+def _header_from_any(header_like) -> fits.Header:
+    if isinstance(header_like, fits.Header):
+        header = header_like.copy()
+    else:
+        header = fits.Header()
+        for key, value in dict(header_like).items():
+            if value is None or str(key).lower() == "keycomments":
+                continue
+            if isinstance(value, np.ndarray) and value.shape == ():
+                value = value.item()
+            if isinstance(value, (bytes, bytearray)):
+                value = value.decode("utf-8", "ignore")
+            try:
+                header[str(key)] = value
+            except Exception:
+                continue
+    return _normalize_gx_header_values(header)
+
+
+def map_from_data_header_compat(data, header) -> Map:
+    """
+    Build a SunPy map while enforcing unit sanitation and GX-compatible RSUN_REF.
+    """
+    return Map(data, _header_from_any(header))
+
+
+def _normalize_loaded_map_rsun(smap: Map) -> Map:
+    try:
+        rsun_m = u.Quantity(smap.rsun_meters).to_value(u.m)
+    except Exception:
+        rsun_m = None
+    if rsun_m is not None and np.isclose(rsun_m, IDL_HMI_RSUN_M, rtol=0.0, atol=1e-6):
+        return smap
+    return map_from_data_header_compat(np.asarray(smap.data), smap.meta)
+
+
 def _first_image_hdu(hdulist):
     for hdu in hdulist:
         if getattr(hdu, "data", None) is not None:
@@ -373,14 +507,10 @@ def load_sunpy_map_compat(path_or_data, header=None):
     `(data, header)`.
     """
     if header is not None:
-        if isinstance(header, fits.Header):
-            safe_header = _sanitize_unit_like_header_values(header.copy())
-        else:
-            safe_header = _sanitize_unit_like_header_values(fits.Header(header))
-        return Map(path_or_data, safe_header)
+        return map_from_data_header_compat(path_or_data, header)
 
     try:
-        return Map(path_or_data)
+        return _normalize_loaded_map_rsun(Map(path_or_data))
     except Exception as exc:
         msg = str(exc)
         if ("did not parse as unit" not in msg) and ("not a valid unit" not in msg):
@@ -389,8 +519,8 @@ def load_sunpy_map_compat(path_or_data, header=None):
         with fits.open(path_or_data) as hdul:
             image_hdu = _first_image_hdu(hdul)
             data = image_hdu.data
-            safe_header = _sanitize_unit_like_header_values(image_hdu.header.copy())
-        return Map(data, safe_header)
+            safe_header = image_hdu.header.copy()
+        return map_from_data_header_compat(data, safe_header)
 
 
 def observer_ephemeris_from_map(source_map) -> tuple[dict[str, float | str], tuple[str, ...]]:
@@ -961,7 +1091,7 @@ def hmi_disambig(azimuth_map, disambig_map, method=2):
     azimuth[index] += 180
     azimuth = azimuth % 360  # Ensure azimuth stays within [0, 360]
 
-    map_azimuth = Map(azimuth, azimuth_map.meta)
+    map_azimuth = map_from_data_header_compat(azimuth, azimuth_map.meta)
     return map_azimuth
 
 
@@ -1049,9 +1179,9 @@ def hmi_b2ptr(map_field, map_inclination, map_azimuth):
     bptr[2, :, :] = k11 * b_xi + k12 * b_eta + k13 * b_zeta
 
     header = map_field.fits_header
-    map_bp = Map(bptr[0, :, :], header)
-    map_bt = Map(bptr[1, :, :], header)
-    map_br = Map(bptr[2, :, :], header)
+    map_bp = map_from_data_header_compat(bptr[0, :, :], header)
+    map_bt = map_from_data_header_compat(bptr[1, :, :], header)
+    map_br = map_from_data_header_compat(bptr[2, :, :], header)
 
     return map_bp, map_bt, map_br
 

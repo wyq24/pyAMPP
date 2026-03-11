@@ -219,7 +219,7 @@ def _normalize_vector(vec: np.ndarray) -> np.ndarray | None:
 
 def _viewer_camera_vectors(box, obs_time: Time) -> tuple[np.ndarray | None, np.ndarray | None]:
     """
-    Reproduce the legacy gxbox_factory LoS camera basis for standalone HDF5 viewing.
+    Reproduce the legacy GxBox LoS camera basis for standalone HDF5 viewing.
     """
     box_origin = getattr(box, "_origin", None)
     frame_obs = getattr(box, "_frame_obs", None)

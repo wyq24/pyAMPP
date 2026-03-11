@@ -17,6 +17,8 @@ from matplotlib import colors
 import sunpy.map
 from sunpy.visualization import colormaps as sunpy_colormaps
 
+from .boxutils import map_from_data_header_compat
+
 app = typer.Typer(help="View refmaps and base maps stored in a model HDF5 file.")
 
 
@@ -286,7 +288,7 @@ class RefmapViewer(QtWidgets.QMainWindow):
         im = None
         used_sunpy = False
         try:
-            smap = sunpy.map.Map(data, header)
+            smap = map_from_data_header_compat(data, header)
             ax = self.figure.add_subplot(111, projection=smap)
             im = smap.plot(axes=ax, cmap=cmap, norm=norm)
             used_sunpy = True

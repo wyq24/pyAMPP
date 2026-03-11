@@ -123,6 +123,9 @@ reports/parity_review/PRESENTATION_COMPARISON_TEST_CHR_NONE.md
 
 # Private local notes (not for version control)
 notes/private/
+/TODO_*.md
+/TODAY_*.md
+/HANDOFF_*.md
 legacy/
 
 # Local ad hoc test helpers under the package tree

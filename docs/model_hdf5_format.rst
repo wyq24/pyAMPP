@@ -29,6 +29,44 @@ Common Groups (All Stages)
 - ``base/chromo_mask``
 - ``base/index`` (IDL-compatible serialized header payload)
 
+``base/index`` compatibility notes
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``base/index`` is intended to preserve the scientific meaning of the saved base
+map geometry and to remain consumable by IDL/GX-oriented tools, but it is not
+guaranteed to be numerically identical to the internal WCS produced by the IDL
+``prepare_basemaps.pro`` round-trip.
+
+Current design intent:
+
+- pyAMPP treats the imported SunPy/HMI map WCS and observer metadata as the
+  primary source of truth for newly generated base maps.
+- pyAMPP writes an IDL-compatible serialized header payload whose Carrington /
+  observer tags are semantically correct for the saved base grid.
+- pyAMPP does **not** intentionally reproduce every SSW internal normalization
+  step (for example the IDL ``wcs2map -> map2wcs`` round-trip) unless that
+  behavior is independently justified.
+
+Practical implications:
+
+- Small differences in cards such as ``CRVAL*``, ``CRLN_OBS``, ``DSUN_OBS``, or
+  ``SOLAR_B0`` may remain when comparing a fresh pyAMPP model against an IDL
+  model built from the same source FITS files.
+- Those differences do not automatically imply a scientific error in the pyAMPP
+  base maps; they may reflect different WCS normalization conventions between
+  SunPy and SSW.
+- Users who require strict IDL basemap parity may start from an IDL-produced
+  ``NONE`` model via ``--entry-box`` and continue the workflow from there.
+- For downstream numerical equivalency beyond the basemap stage, IDL and pyAMPP
+  should also use the same NLFFF library/version; otherwise later model stages
+  can diverge even when the starting ``NONE`` model is identical.
+
+Compatibility requirement for imported legacy models:
+
+- SAV/HDF5 import paths should produce a ``base/index`` payload that is
+  structurally compatible with the current pyAMPP contract, even when the
+  original IDL header representation is not preserved byte-for-byte.
+
 ``metadata``
 ~~~~~~~~~~~~
 

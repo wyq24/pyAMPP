@@ -1,5 +1,10 @@
 import os
 
+# Match the HMI/GX/IDL convention used in WCS_RSUN and LoadGXmodel:
+# 69600000000 cm = 6.96e8 m.
+IDL_HMI_RSUN_CM = 6.96e10
+IDL_HMI_RSUN_M = 6.96e8
+
 def get_base_directory():
     """ Get the base directory depending on the OS. """
     home_dir = os.path.expanduser('~')

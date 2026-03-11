@@ -43,7 +43,7 @@ from sunpy.coordinates import (
 from sunpy.visualization import colormaps as sunpy_colormaps
 
 from .box import Box
-from .boxutils import load_sunpy_map_compat
+from .boxutils import load_sunpy_map_compat, map_from_data_header_compat
 from .observer_restore import (
     build_ephemeris_from_pb0r,
     build_pb0r_metadata_from_ephemeris,
@@ -2152,7 +2152,7 @@ class MapBoxDisplayWidget(QWidget):
                 return None
             header = box.bottom_cea_header
             self._copy_observer_cards_from_map(header, ref_map)
-            smap = Map(np.asarray(data), header)
+            smap = map_from_data_header_compat(np.asarray(data), header)
         except Exception:
             return None
         with self._cache_lock:
@@ -2236,7 +2236,7 @@ class MapBoxDisplayWidget(QWidget):
             ref_map = self._reference_context_map()
             self._copy_observer_cards_from_map(header, ref_map)
             header[_EMBEDDED_REFMAP_FLAG] = True
-            smap = Map(np.asarray(data), header)
+            smap = map_from_data_header_compat(np.asarray(data), header)
         except Exception:
             return None
         with self._cache_lock:
@@ -2938,7 +2938,7 @@ class MapBoxDisplayWidget(QWidget):
             norm = mcolors.Normalize(vmin=0.0, vmax=1000.0)
             for streamlines_subset in self._fieldline_streamlines:
                 for coord, field in self._extract_streamlines(streamlines_subset):
-                    # Mirror legacy gxbox_factory.plot_fieldlines():
+                    # Mirror the legacy GxBox field-line overlay behavior:
                     # convert streamline coords from HCC to observer HPC, project to
                     # map pixels, then render pixel-space LineCollection segments.
                     coord_hcc = SkyCoord(

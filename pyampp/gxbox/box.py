@@ -5,12 +5,14 @@ import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
 from sunpy.coordinates import (
+    HeliographicCarrington,
     Helioprojective,
     HeliographicStonyhurst,
     Heliocentric,
 )
 from sunpy.map import make_fitswcs_header
 from pyampp.gxbox.observer_restore import resolve_observer_from_metadata, resolve_named_observer, resolve_observer_with_info
+from pyampp.util.config import IDL_HMI_RSUN_M
 try:
     from sunpy.coordinates.screens import SphericalScreen
 except Exception:  # pragma: no cover
@@ -366,11 +368,13 @@ class Box(BoxGeometryMixin):
                          frame=box_center.frame) for edge in edges]
 
     def _get_bottom_cea_header(self):
-        origin = self._origin.transform_to(HeliographicStonyhurst)
+        origin = self._origin.transform_to(
+            HeliographicCarrington(observer="earth", obstime=getattr(self._origin, "obstime", None))
+        )
         shape = self._dims[:-1][::-1] / self._res.to(self._dims.unit)
         shape = list(shape.value)
         shape = [int(np.ceil(s)) for s in shape]
-        rsun = origin.rsun.to(self._res.unit)
+        rsun = (IDL_HMI_RSUN_M * u.m).to(self._res.unit)
         scale = np.arcsin(self._res / rsun).to(u.deg) / u.pix
         scale = u.Quantity((scale, scale))
         bottom_cea_header = make_fitswcs_header(shape, origin,
@@ -388,6 +392,7 @@ class Box(BoxGeometryMixin):
             dsun_obs = origin.observer.radius.to(self._res.unit)
         else:
             dsun_obs = u.Quantity(dsun_obs).to(self._res.unit)
+        rsun = (IDL_HMI_RSUN_M * u.m).to(self._res.unit)
         # Match IDL TOP scaling: dx_arcsec ~ dx_km / (DSUN_OBS - RSUN).
         scale = ((self._res / (dsun_obs - rsun)).to(u.dimensionless_unscaled) * u.rad).to(u.arcsec) / u.pix
         scale = u.Quantity((scale, scale))
@@ -466,7 +471,7 @@ class Box(BoxGeometryMixin):
     def box_view_up(self):
         """
         Return two nearby points in the observer frame that define the local +Y (screen up) direction.
-        gxbox_factory.box_view_up() converts these to Heliocentric and takes their vector difference.
+        The viewer converts these to Heliocentric and takes their vector difference.
         """
         origin_obs = self._origin.transform_to(self._frame_obs)
         delta = 10 * u.arcsec

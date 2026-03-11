@@ -13,7 +13,7 @@ import numpy as np
 from astropy.io import fits
 from scipy.io import readsav
 
-from pyampp.gxbox.boxutils import extract_sav_refmaps
+from pyampp.gxbox.boxutils import extract_sav_refmaps, serialize_sav_index_header
 from pyampp.gxbox.gx_box2id import gx_box2id
 
 
@@ -403,7 +403,7 @@ def build_h5_from_sav(sav_path: Path, out_h5: Path, template_h5: Path | None = N
             if "CHROMO_MASK" in base.dtype.names:
                 _replace_dataset(g_base, "chromo_mask", np.asarray(base["CHROMO_MASK"], dtype=np.int32))
             if index is not None:
-                _replace_dataset(g_base, "index", np.bytes_(str(index)))
+                _replace_dataset(g_base, "index", np.bytes_(serialize_sav_index_header(index)))
 
         if dr.size >= 2:
             _replace_dataset(g_grid, "dx", np.float64(dr[0]))
