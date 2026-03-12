@@ -58,3 +58,26 @@ def test_combo_model_uses_supplied_chromo_mask(monkeypatch):
 
     assert called is False
     np.testing.assert_array_equal(chromo_box["chromo_mask"], chromo_mask)
+
+
+def test_combo_model_rejects_mismatched_chromo_mask_shape():
+    box = {
+        "bx": np.zeros((3, 2, 2), dtype=np.float32),
+        "by": np.zeros((3, 2, 2), dtype=np.float32),
+        "bz": np.zeros((3, 2, 2), dtype=np.float32),
+    }
+    dr = np.array([0.1, 0.1, 0.1], dtype=np.float64)
+    stored_mask = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.int32)
+
+    try:
+        combo_model(
+            box,
+            dr,
+            np.zeros((3, 2), dtype=np.float32),
+            np.ones((3, 2), dtype=np.float32),
+            chromo_mask=stored_mask,
+        )
+    except ValueError as exc:
+        assert "does not match box xy shape" in str(exc)
+    else:
+        raise AssertionError("combo_model() should reject a mismatched chromo_mask shape")

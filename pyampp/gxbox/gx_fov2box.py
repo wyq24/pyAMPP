@@ -2052,8 +2052,10 @@ def main(
         if "ic" not in base_group:
             base_group["ic"] = np.asarray(base_group["bz"], dtype=float).copy()
         if "chromo_mask" not in base_group:
-            base_group["chromo_mask"] = decompose(np.asarray(base_group["bz"], dtype=float).T,
-                                                  np.asarray(base_group["ic"], dtype=float).T)
+            base_group["chromo_mask"] = decompose(
+                np.asarray(base_group["bz"], dtype=float).T,
+                np.asarray(base_group["ic"], dtype=float).T,
+            ).T
         refmaps = dict(entry_loaded.get("refmaps", {}))
         base_bz_arr = np.asarray(base_group["bz"], dtype=float)
         base_ic_arr = np.asarray(base_group["ic"], dtype=float)
@@ -2213,7 +2215,8 @@ def main(
                 obs_time_override=obs_time,
                 rsun_override=rsun,
             )
-            chromo_mask_local = decompose(base_bz_arr.T, base_ic_arr.T)
+            # Keep stored chromo_mask in the same ny/nx orientation as the 2D base products.
+            chromo_mask_local = decompose(base_bz_arr.T, base_ic_arr.T).T
             return index_local, {
                 "bx": bottom_bx.data,
                 "by": bottom_by.data,
@@ -2671,7 +2674,7 @@ def main(
     header = _make_header(maps["field"]) if maps is not None else {}
     chromo_mask = None
     if "chromo_mask" in base_group:
-        chromo_mask = np.asarray(base_group["chromo_mask"])
+        chromo_mask = np.asarray(base_group["chromo_mask"]).T
     chromo_box = combo_model(nlfff_box, dr3, base_bz_arr.T, base_ic_arr.T, chromo_mask=chromo_mask)
     for k in ["codes", "apex_idx", "start_idx", "end_idx", "seed_idx",
               "av_field", "phys_length", "voxel_status"]:

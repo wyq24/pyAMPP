@@ -172,6 +172,9 @@ Recommended patterns:
        --gxmodel-dir /path/to/output_dir \
        --clone-only
 
+  Use this when you want the closest HDF5 equivalent of the original SAV entry.
+  This path does not rerun ``POT``, ``NAS``, ``GEN``, or ``CHR``.
+
 - Start from an IDL ``NONE``-equivalent entry and recompute later stages in Python:
 
   .. code-block:: bash
@@ -188,6 +191,19 @@ Recommended patterns:
        --save-chr \
        --stop-after chr \
        --rebuild-from-none
+
+- Resume from an existing entry stage and recompute only the later stages:
+
+  .. code-block:: bash
+
+     gx-fov2box \
+       --entry-box /path/to/model.sav \
+       --save-chr \
+       --stop-after chr \
+       --jump2chromo
+
+  This is not a pure clone. For a ``NAS.CHR`` entry it will rebuild the CHR
+  products from the stored corona/base inputs and write a new HDF5 result.
 
 Practical parity note:
 

@@ -163,6 +163,7 @@ Entry-Box Resume / Jump Rules
 
 - ``--rebuild``: ignore stage payload and recompute from ``NONE`` using resolved entry parameters.
 - ``--clone-only``: convert/copy an entry box to normalized HDF5 without recomputation (useful as ``convert-from-sav``).
+- ``--clone-only`` is the exact normalization path. By contrast, ``--jump2chromo`` resumes at CHR and recomputes that stage from the stored entry payload.
 - Without ``--jump2*``, the pipeline starts from the detected entry stage.
 - When ``--entry-box`` contains ``metadata/execute``, ``--data-dir`` and ``--gxmodel-dir`` default from that execute string.
 - Explicit CLI values for ``--data-dir`` / ``--gxmodel-dir`` always override execute-derived defaults.
