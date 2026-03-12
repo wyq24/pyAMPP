@@ -1531,6 +1531,22 @@ def _decode_sav_value(v) -> str:
     return str(v)
 
 
+def _sav_scalar(v):
+    if hasattr(v, "item"):
+        try:
+            return v.item()
+        except Exception:
+            pass
+    return v
+
+
+def _sav_line_to_flat(arr: np.ndarray) -> np.ndarray:
+    a = np.asarray(arr)
+    if a.ndim <= 1:
+        return a.reshape(-1)
+    return a.T.reshape(-1, order="F")
+
+
 def _load_entry_box_any(entry_path: Path) -> Dict[str, Any]:
     if entry_path.suffix.lower() == ".h5":
         return read_b3d_h5(str(entry_path))
@@ -1549,6 +1565,9 @@ def _load_entry_box_any(entry_path: Path) -> Dict[str, Any]:
     names = set(box.dtype.names or [])
 
     base = None
+    index = box["INDEX"][0] if "INDEX" in names else None
+    dr = np.asarray(box["DR"], dtype=np.float64).reshape(-1) if "DR" in names else None
+    corona_base = int(_sav_scalar(box["CORONA_BASE"])) if "CORONA_BASE" in names else None
     if "BASE" in names:
         base_raw = box["BASE"][0]
         bnames = set(base_raw.dtype.names or [])
@@ -1562,8 +1581,8 @@ def _load_entry_box_any(entry_path: Path) -> Dict[str, Any]:
                 base["ic"] = np.asarray(base_raw["IC"])
             if "CHROMO_MASK" in bnames:
                 base["chromo_mask"] = np.asarray(base_raw["CHROMO_MASK"])
-            if "INDEX" in names:
-                base["index"] = serialize_sav_index_header(box["INDEX"][0])
+            if index is not None:
+                base["index"] = serialize_sav_index_header(index)
             out["base"] = base
 
     ny = nx = None
@@ -1588,6 +1607,10 @@ def _load_entry_box_any(entry_path: Path) -> Dict[str, Any]:
                 "bz": _sav_cube_to_internal_xyz(bc[2], ny, nx),
                 "attrs": {"model_type": "unknown"},
             }
+    if "corona" in out and dr is not None and dr.size >= 3:
+        out["corona"]["dr"] = dr.astype(np.float64)
+    if "corona" in out and corona_base is not None:
+        out["corona"]["corona_base"] = int(corona_base)
 
     # Lines metadata if present.
     lines = {}
@@ -1604,14 +1627,16 @@ def _load_entry_box_any(entry_path: Path) -> Dict[str, Any]:
                 .replace("physlength", "phys_length")
                 .replace("status", "voxel_status")
             )
-            lines[kk] = np.asarray(box[k])
+            lines[kk] = _sav_line_to_flat(np.asarray(box[k]))
+    if dr is not None and dr.size >= 3:
+        lines["dr"] = dr.astype(np.float64)
     if lines:
         out["lines"] = lines
 
     # CHR fields if present.
     chromo = {}
     for k in ("CHROMO_IDX", "CHROMO_N", "CHROMO_T", "N_P", "N_HI", "N_HTOT", "TR", "TR_H",
-              "CHROMO_LAYERS", "DZ", "CHROMO_MASK", "CHROMO_BCUBE"):
+              "CHROMO_LAYERS", "DZ", "CHROMO_MASK"):
         if k in names:
             kk = k.lower()
             chromo[kk] = np.asarray(box[k])
@@ -1621,14 +1646,57 @@ def _load_entry_box_any(entry_path: Path) -> Dict[str, Any]:
             chromo["bx"] = _sav_cube_to_internal_xyz(cbc[0], ny, nx)
             chromo["by"] = _sav_cube_to_internal_xyz(cbc[1], ny, nx)
             chromo["bz"] = _sav_cube_to_internal_xyz(cbc[2], ny, nx)
+    if base is not None and "chromo_mask" in base and "chromo_mask" not in chromo:
+        chromo["chromo_mask"] = np.asarray(base["chromo_mask"], dtype=np.int32)
     if chromo:
         out["chromo"] = chromo
+
+    grid = {}
+    if dr is not None and dr.size >= 2:
+        grid["dx"] = np.float64(dr[0])
+        grid["dy"] = np.float64(dr[1])
+    if "DZ" in names:
+        grid["dz"] = np.asarray(box["DZ"], dtype=np.float64)
+
+    voxel_id = None
+    if "corona" in out and dr is not None and dr.size >= 3:
+        voxel_id = gx_box2id(out)
+    if voxel_id is not None:
+        grid["voxel_id"] = np.asarray(voxel_id, dtype=np.uint32)
+    if grid:
+        out["grid"] = grid
 
     refmaps = {}
     for _order_index, map_id, map_data, map_header in extract_sav_refmaps(box):
         refmaps[map_id] = {"data": map_data, "wcs_header": map_header}
     if refmaps:
         out["refmaps"] = refmaps
+
+    if index is not None:
+        observer_meta: Dict[str, Any] = {
+            "name": "earth",
+            "label": "Earth",
+        }
+        ephemeris: Dict[str, Any] = {}
+        inames = set(index.dtype.names or ())
+        if "DATE_OBS" in inames:
+            ephemeris["obs_date"] = _decode_sav_value(index["DATE_OBS"])
+        if "HGLN_OBS" in inames:
+            ephemeris["hgln_obs_deg"] = float(_sav_scalar(index["HGLN_OBS"]))
+        if "HGLT_OBS" in inames:
+            ephemeris["hglt_obs_deg"] = float(_sav_scalar(index["HGLT_OBS"]))
+        if "DSUN_OBS" in inames:
+            ephemeris["dsun_cm"] = float(u.Quantity(float(_sav_scalar(index["DSUN_OBS"])), u.m).to_value(u.cm))
+        ephemeris["rsun_cm"] = float(u.Quantity(IDL_HMI_RSUN_M, u.m).to_value(u.cm))
+        observer_meta["ephemeris"] = ephemeris
+        pb0r = build_pb0r_metadata_from_ephemeris(
+            ephemeris,
+            observer_key=observer_meta.get("name"),
+            obs_time=ephemeris.get("obs_date"),
+        )
+        if pb0r:
+            observer_meta["pb0r"] = pb0r
+        out["observer"] = observer_meta
 
     sid = _decode_sav_value(box["ID"]) if "ID" in names else entry_path.stem
     execute = _decode_sav_value(box["EXECUTE"]) if "EXECUTE" in names else ""
@@ -1920,7 +1988,19 @@ def main(
         meta = dict(clone_box.get("metadata", {}))
         meta.setdefault("execute", _build_execute_cmd(cfg))
         meta.setdefault("id", out_path.stem)
-        meta["clone_only"] = "true"
+        entry_suffix = Path(cfg.entry_box).suffix.lower() if cfg.entry_box else ""
+        projection_tag = _decode_id_text(
+            meta.get("projection") or ("TOP" if cfg.top else "CEA")
+        ).upper()
+        meta.setdefault(
+            "lineage",
+            f"ENTRY.{stage_tag}.{entry_suffix.lstrip('.').upper() or 'H5'}->{stage_tag}.h5",
+        )
+        meta.setdefault("disambiguation", "IDL" if entry_suffix == ".sav" else "HMI")
+        meta.setdefault("projection", projection_tag)
+        meta.setdefault("axis_order_2d", "yx")
+        meta.setdefault("axis_order_3d", "zyx")
+        meta.setdefault("vector_layout", "split_components")
         clone_box["metadata"] = meta
         if observer_metadata is not None:
             clone_box["observer"] = observer_metadata
