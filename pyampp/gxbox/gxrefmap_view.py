@@ -127,10 +127,10 @@ def _resolve_model_to_h5(path: Path) -> tuple[Path, Optional[Path]]:
     if path.suffix.lower() != ".sav":
         return path, None
     try:
-        from pyampp.tests.build_h5_from_sav import build_h5_from_sav
+        from pyampp.util.build_h5_from_sav import build_h5_from_sav
     except Exception as exc:
         raise RuntimeError(
-            "SAV input requires converter module 'pyampp.tests.build_h5_from_sav'. "
+            "SAV input requires converter module 'pyampp.util.build_h5_from_sav'. "
             "Run conversion manually to H5, then reopen."
         ) from exc
     tmp_dir = Path(tempfile.mkdtemp(prefix="pyampp_refmap_view_"))

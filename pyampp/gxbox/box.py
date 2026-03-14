@@ -387,7 +387,6 @@ class Box(BoxGeometryMixin):
         shape = self._dims[:-1][::-1] / self._res.to(self._dims.unit)
         shape = list(shape.value)
         shape = [int(np.ceil(s)) for s in shape]
-        rsun = origin.rsun.to(self._res.unit)
         if dsun_obs is None:
             dsun_obs = origin.observer.radius.to(self._res.unit)
         else:

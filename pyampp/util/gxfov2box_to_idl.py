@@ -31,9 +31,10 @@ def _strip_command_name(tokens: List[str]) -> List[str]:
     if not tokens:
         return tokens
     candidates = {"gx-fov2box", "gx_fov2box"}
-    if tokens[0] in candidates:
+    exe = Path(tokens[0]).name.lower()
+    if exe in candidates:
         return tokens[1:]
-    if len(tokens) >= 4 and tokens[0].endswith("python") and tokens[1] == "-m" and tokens[2] == "pyampp.gxbox.gx_fov2box":
+    if len(tokens) >= 4 and exe.startswith("python") and tokens[1] == "-m" and tokens[2] == "pyampp.gxbox.gx_fov2box":
         return tokens[3:]
     return tokens
 

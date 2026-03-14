@@ -121,7 +121,7 @@ def main(
             _print_group(h5f, "", show_attrs, max_attr_len, max_depth, 0, flt, "")
         if (not no_metadata) and "metadata" in h5f:
             _print_metadata_values(h5f["metadata"])
-        if not no_metadata:
+        if (not no_metadata) and (not meta_only):
             _print_observer_summary(h5f)
 
 

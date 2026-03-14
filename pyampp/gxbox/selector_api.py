@@ -8,11 +8,11 @@ FOV/box-selector) can use to communicate geometry changes back to ``pyAMPP``.
 """
 
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import Enum
 from typing import Any, Protocol
 
 
-class CoordMode(StrEnum):
+class CoordMode(str, Enum):
     """Coordinate representation used by the GUI center fields."""
 
     HPC = "hpc"

@@ -293,10 +293,10 @@ def prepare_model_for_viewer(model_path: str | Path) -> tuple[SimpleBox, Time, s
     temp_h5_path = None
     if model_path.suffix.lower() == ".sav":
         try:
-            from pyampp.tests.build_h5_from_sav import build_h5_from_sav
+            from pyampp.util.build_h5_from_sav import build_h5_from_sav
         except Exception as exc:
             raise RuntimeError(
-                "SAV input requires converter module 'pyampp.tests.build_h5_from_sav'. "
+                "SAV input requires converter module 'pyampp.util.build_h5_from_sav'. "
                 "Run conversion manually to H5, then reopen."
             ) from exc
         tmp_dir = Path(tempfile.mkdtemp(prefix="pyampp_view_h5_"))
@@ -315,7 +315,10 @@ def prepare_model_for_viewer(model_path: str | Path) -> tuple[SimpleBox, Time, s
         dims = infer_dims(b3d)
         obs_time = infer_time(b3d)
         res = infer_res(b3d)
-        frame = Heliocentric(observer=_resolve_model_observer(b3d, obs_time), obstime=obs_time)
+        observer, observer_warning = _resolve_model_observer(b3d, obs_time)
+        if observer_warning:
+            print(f"Warning: {observer_warning}")
+        frame = Heliocentric(observer=observer, obstime=obs_time)
         center = SkyCoord(0 * u.Mm, 0 * u.Mm, 0 * u.Mm, frame=frame)
         box = SimpleBox(dims_pix=dims, res=res.to(u.Mm), b3d=b3d, _frame_obs=frame, _center=center)
 
