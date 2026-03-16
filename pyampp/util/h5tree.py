@@ -28,6 +28,35 @@ def _matches_filter(full_path: str, name: str, flt: Optional[str]) -> bool:
     return flt in full_path.lower() or flt in name.lower()
 
 
+def _decode_scalar(value: Any) -> Any:
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode()
+    return value
+
+
+def _print_metadata_values(meta: h5py.Group) -> None:
+    for key in meta.keys():
+        val = _decode_scalar(meta[key][()])
+        print(f"metadata/{key}: {val}")
+
+
+def _print_observer_summary(h5f: h5py.File) -> None:
+    observer = h5f.get("observer")
+    if not isinstance(observer, h5py.Group):
+        return
+    if "name" in observer:
+        print(f"observer/name: {_decode_scalar(observer['name'][()])}")
+    if "label" in observer:
+        print(f"observer/label: {_decode_scalar(observer['label'][()])}")
+    if "source" in observer:
+        print(f"observer/source: {_decode_scalar(observer['source'][()])}")
+    pb0r = observer.get("pb0r")
+    if not isinstance(pb0r, h5py.Group):
+        return
+    for key in pb0r.keys():
+        print(f"observer/pb0r/{key}: {_decode_scalar(pb0r[key][()])}")
+
+
 def _print_group(
     group: h5py.Group,
     prefix: str,
@@ -79,22 +108,21 @@ def main(
     max_attr_len: int | None = typer.Option(120, "--attr-max", help="Max length for each attribute entry."),
     max_depth: int | None = typer.Option(None, "--max-depth", help="Limit recursion depth."),
     flt: Optional[str] = typer.Option(None, "--filter", help="Only show paths matching this string."),
-    show_metadata: bool = typer.Option(False, "--show-metadata", help="Print metadata/id and metadata/execute if present."),
+    no_metadata: bool = typer.Option(False, "--no-metadata", help="Do not print metadata/* values."),
+    meta_only: bool = typer.Option(False, "--meta", help="Print only metadata/* values (no tree)."),
 ) -> None:
     """Print a tree of groups/datasets with shapes and dtypes."""
     if path is None:
         print(ctx.get_help())
         raise typer.Exit(code=0)
     with h5py.File(path, "r") as h5f:
-        print(f"{path}")
-        _print_group(h5f, "", show_attrs, max_attr_len, max_depth, 0, flt, "")
-        if show_metadata and "metadata" in h5f:
-            meta = h5f["metadata"]
-            for key in meta.keys():
-                val = meta[key][()]
-                if isinstance(val, (bytes, bytearray)):
-                    val = val.decode()
-                print(f"metadata/{key}: {val}")
+        if not meta_only:
+            print(f"{path}")
+            _print_group(h5f, "", show_attrs, max_attr_len, max_depth, 0, flt, "")
+        if (not no_metadata) and "metadata" in h5f:
+            _print_metadata_values(h5f["metadata"])
+        if (not no_metadata) and (not meta_only):
+            _print_observer_summary(h5f)
 
 
 if __name__ == "__main__":

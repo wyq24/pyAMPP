@@ -108,12 +108,25 @@ def write_b3d_h5(filename: str, box_b3d: dict):
                     else:
                         group.create_dataset(key, data=value)
                 continue
-            group = hdf_file.create_group(model_type)
+            if model_type == "refmaps":
+                group = hdf_file.create_group(model_type, track_order=True)
+            else:
+                group = hdf_file.create_group(model_type)
+            refmap_idx = 0
             for component, data in components.items():
                 if component == "attrs":
                     group.attrs.update(data)
                 else:
-                    if model_type == "chromo" and component == "voxel_status":
+                    if isinstance(data, dict):
+                        if model_type == "refmaps":
+                            sub = group.create_group(component, track_order=True)
+                            sub.attrs["order_index"] = np.int64(refmap_idx)
+                            refmap_idx += 1
+                        else:
+                            sub = group.create_group(component)
+                        for sub_key, sub_val in data.items():
+                            sub.create_dataset(sub_key, data=sub_val)
+                    elif model_type == "chromo" and component == "voxel_status":
                         group.create_dataset(component, data=np.asarray(data, dtype=np.uint8))
                     else:
                         group.create_dataset(component, data=data)

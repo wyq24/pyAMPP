@@ -12,7 +12,6 @@ This note summarizes code changes and comparison results performed to align Pyth
 ### Reprojection parity (IDL `/ssaa`)
 - Switched `reproject_to` algorithm to `"exact"` (flux‑conserving) across:
   - `pyampp/gxbox/gx_fov2box.py`
-  - `pyampp/gxbox/gxbox_factory.py`
   - `pyampp/util/compute.py`
 - Removed `roundtrip_coords=False` where it was passed to `reproject_exact`.
 
@@ -24,7 +23,6 @@ This note summarizes code changes and comparison results performed to align Pyth
 - IDL base convention: `BX=BP`, `BY=-BT`, `BZ=BR`.
 - Applied in:
   - `pyampp/gxbox/gx_fov2box.py`
-  - `pyampp/gxbox/gxbox_factory.py` (base map paths + NLFFF boundary seed map)
 
 ### RSUN parity
 - IDL sets `WCS_RSUN=6.96e8` for coordinate transforms.
@@ -94,4 +92,3 @@ Value  H5_count  IDL_count  diff
 2. Full‑map reprojection produced NaNs at edges; decompose handles it but may still affect class assignments.
 3. Need to verify whether the latest run used the updated full‑map remap code or older path (execute string in H5 does not encode code version).
 4. Optional: compare mismatch spatial distribution and investigate if differences cluster by mask class or near edges.
-

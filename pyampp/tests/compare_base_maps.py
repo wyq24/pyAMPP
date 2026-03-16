@@ -24,6 +24,19 @@ class Metrics:
     std_b: float
 
 
+@dataclass
+class RelativeMetrics:
+    mae: float
+    rmse: float
+    max_abs: float
+    min: float
+    max: float
+    mean: float
+    std: float
+    valid_count: int
+    total_count: int
+
+
 def _as_ndarray(value) -> np.ndarray:
     out = np.asarray(value)
     if out.dtype.byteorder not in ("=", "|"):
@@ -54,6 +67,45 @@ def _metrics(a: np.ndarray, b: np.ndarray) -> Metrics:
         mean_b=float(np.nanmean(bb)),
         std_a=float(np.nanstd(aa)),
         std_b=float(np.nanstd(bb)),
+    )
+
+
+def _relative_diff(a: np.ndarray, b: np.ndarray, mode: str = "bounded") -> np.ndarray:
+    da = _as_ndarray(a).astype(np.float64, copy=False)
+    db = _as_ndarray(b).astype(np.float64, copy=False)
+    diff = da - db
+
+    if mode == "signed":
+        denom = da + db
+    else:
+        # Symmetric normalized difference guaranteed in [-1, 1] for finite denominator.
+        denom = np.abs(da) + np.abs(db)
+
+    out = np.full(da.shape, np.nan, dtype=np.float64)
+    finite = np.isfinite(diff) & np.isfinite(denom)
+    nz = finite & (np.abs(denom) > 0.0)
+    out[nz] = diff[nz] / denom[nz]
+    return out
+
+
+def _relative_metrics(rel: np.ndarray) -> RelativeMetrics:
+    rr = _as_ndarray(rel).astype(np.float64, copy=False)
+    finite = np.isfinite(rr)
+    total = int(rr.size)
+    valid = int(np.count_nonzero(finite))
+    if valid == 0:
+        return RelativeMetrics(np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, 0, total)
+    rv = rr[finite]
+    return RelativeMetrics(
+        mae=float(np.nanmean(np.abs(rv))),
+        rmse=float(np.sqrt(np.nanmean(rv * rv))),
+        max_abs=float(np.nanmax(np.abs(rv))),
+        min=float(np.nanmin(rv)),
+        max=float(np.nanmax(rv)),
+        mean=float(np.nanmean(rv)),
+        std=float(np.nanstd(rv)),
+        valid_count=valid,
+        total_count=total,
     )
 
 
@@ -118,6 +170,15 @@ def main() -> int:
     parser.add_argument("--h5", required=True, type=Path, help="Path to CHR/NAS/POT HDF5 file.")
     parser.add_argument("--sav", required=True, type=Path, help="Path to IDL SAV model file.")
     parser.add_argument("--out", type=Path, help="Optional output JSON report path.")
+    parser.add_argument(
+        "--relative-mode",
+        choices=("bounded", "signed"),
+        default="bounded",
+        help=(
+            "Relative difference mode: 'bounded' uses (H5-SAV)/(abs(H5)+abs(SAV)) in [-1,1]; "
+            "'signed' uses (H5-SAV)/(H5+SAV)."
+        ),
+    )
     args = parser.parse_args()
 
     h5_base = _load_h5_base(args.h5)
@@ -127,11 +188,16 @@ def main() -> int:
         "h5": str(args.h5),
         "sav": str(args.sav),
         "direct": {},
+        "relative": {},
         "best_simple_transform": {},
         "horizontal_magnitude": {},
         "notes": [
             "best_simple_transform searches transpose/flip/sign variants of each SAV base map independently.",
             "Large Bx/By mismatch with good Bz/IC agreement often points to horizontal-vector convention or disambiguation differences.",
+            (
+                "relative uses (H5-SAV)/(abs(H5)+abs(SAV)) when --relative-mode=bounded "
+                "(guaranteed in [-1,1] for nonzero denominator)."
+            ),
         ],
     }
 
@@ -144,9 +210,16 @@ def main() -> int:
                 "sav_shape": list(sav_base[key].shape),
                 "error": "shape mismatch",
             }
+            report["relative"][key] = {
+                "h5_shape": list(h5_base[key].shape),
+                "sav_shape": list(sav_base[key].shape),
+                "error": "shape mismatch",
+            }
         else:
             m = _metrics(h5_base[key], sav_base[key])
             report["direct"][key] = m.__dict__
+            rel = _relative_diff(h5_base[key], sav_base[key], mode=args.relative_mode)
+            report["relative"][key] = _relative_metrics(rel).__dict__
 
         tname, tm = _best_simple_transform(
             h5_base[key],

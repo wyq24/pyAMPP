@@ -1,0 +1,2184 @@
+{
+  "stages": [
+    {
+      "file": "hmi.M_720s.20240511_235843.E73S3CR.CEA.NONE.sav",
+      "stage": "NONE",
+      "box_name": "box",
+      "fields": {
+        "BX": {
+          "type": "array",
+          "shape": [
+            64,
+            64,
+            64
+          ],
+          "dtype": ">f8"
+        },
+        "BY": {
+          "type": "array",
+          "shape": [
+            64,
+            64,
+            64
+          ],
+          "dtype": ">f8"
+        },
+        "BZ": {
+          "type": "array",
+          "shape": [
+            64,
+            64,
+            64
+          ],
+          "dtype": ">f8"
+        },
+        "DR": {
+          "type": "array",
+          "shape": [
+            3
+          ],
+          "dtype": ">f8"
+        },
+        "ADD_BASE_LAYER": {
+          "type": "scalar",
+          "dtype": "int16"
+        },
+        "BASE": {
+          "type": "struct",
+          "shape": [
+            1
+          ],
+          "fields": [
+            "BX",
+            "BY",
+            "BZ",
+            "IC"
+          ],
+          "members": {
+            "BX": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            },
+            "BY": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            },
+            "BZ": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            },
+            "IC": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            }
+          }
+        },
+        "INDEX": {
+          "type": "struct",
+          "shape": [
+            1
+          ],
+          "fields": [
+            "SIMPLE",
+            "BITPIX",
+            "NAXIS",
+            "NAXIS1",
+            "NAXIS2",
+            "WCSNAME",
+            "CRPIX1",
+            "CRVAL1",
+            "CTYPE1",
+            "CUNIT1",
+            "CDELT1",
+            "CRPIX2",
+            "CRVAL2",
+            "CTYPE2",
+            "CUNIT2",
+            "CDELT2",
+            "CROTA2",
+            "DATE_D$OBS",
+            "DSUN_OBS",
+            "SOLAR_B0",
+            "HGLN_OBS",
+            "HGLT_OBS",
+            "CRLN_OBS",
+            "CRLT_OBS",
+            "DATE_OBS",
+            "COMMENT",
+            "HISTORY"
+          ],
+          "members": {
+            "SIMPLE": {
+              "type": "scalar",
+              "dtype": "int16"
+            },
+            "BITPIX": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "NAXIS": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "NAXIS1": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "NAXIS2": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "WCSNAME": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CRPIX1": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRVAL1": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CTYPE1": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CUNIT1": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CDELT1": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRPIX2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRVAL2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CTYPE2": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CUNIT2": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CDELT2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CROTA2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "DATE_D$OBS": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "DSUN_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "SOLAR_B0": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "HGLN_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "HGLT_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRLN_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRLT_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "DATE_OBS": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "COMMENT": {
+              "type": "array",
+              "shape": [
+                5
+              ],
+              "dtype": "object"
+            },
+            "HISTORY": {
+              "type": "array",
+              "shape": [
+                5
+              ],
+              "dtype": "object"
+            }
+          }
+        },
+        "REFMAPS": {
+          "type": "struct",
+          "shape": [
+            1
+          ],
+          "fields": [
+            "PLOT_TYPE",
+            "OMAP",
+            "OINDEX",
+            "OPROP",
+            "FREE_VAR__DEFINE_PLACEHOLDER",
+            "DOTPROP_DUMMY",
+            "IDL_OBJECT_TOP",
+            "__OBJ__",
+            "IDL_OBJECT_BOTTOM"
+          ],
+          "members": {
+            "PLOT_TYPE": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "OMAP": {
+              "type": "struct",
+              "shape": [
+                1
+              ],
+              "fields": [
+                "ADD_SIZE",
+                "INIT_SIZE",
+                "LIST",
+                "POINTER"
+              ]
+            },
+            "OINDEX": {
+              "type": "struct",
+              "shape": [
+                1
+              ],
+              "fields": [
+                "ADD_SIZE",
+                "INIT_SIZE",
+                "LIST",
+                "POINTER"
+              ]
+            },
+            "OPROP": {
+              "type": "struct",
+              "shape": [
+                1
+              ],
+              "fields": [
+                "ADD_SIZE",
+                "INIT_SIZE",
+                "LIST",
+                "POINTER"
+              ]
+            },
+            "FREE_VAR__DEFINE_PLACEHOLDER": {
+              "type": "scalar",
+              "dtype": "int16"
+            },
+            "DOTPROP_DUMMY": {
+              "type": "scalar",
+              "dtype": "uint8"
+            },
+            "IDL_OBJECT_TOP": {
+              "type": "scalar",
+              "dtype": "int64"
+            },
+            "__OBJ__": {
+              "type": "scalar",
+              "dtype": "NoneType"
+            },
+            "IDL_OBJECT_BOTTOM": {
+              "type": "scalar",
+              "dtype": "int64"
+            }
+          }
+        },
+        "ID": {
+          "type": "scalar",
+          "dtype": "bytes"
+        },
+        "EXECUTE": {
+          "type": "scalar",
+          "dtype": "bytes"
+        }
+      }
+    },
+    {
+      "file": "hmi.M_720s.20240511_235843.E73S3CR.CEA.POT.sav",
+      "stage": "POT",
+      "box_name": "pbox",
+      "fields": {
+        "BX": {
+          "type": "array",
+          "shape": [
+            64,
+            64,
+            64
+          ],
+          "dtype": ">f8"
+        },
+        "BY": {
+          "type": "array",
+          "shape": [
+            64,
+            64,
+            64
+          ],
+          "dtype": ">f8"
+        },
+        "BZ": {
+          "type": "array",
+          "shape": [
+            64,
+            64,
+            64
+          ],
+          "dtype": ">f8"
+        },
+        "DR": {
+          "type": "array",
+          "shape": [
+            3
+          ],
+          "dtype": ">f8"
+        },
+        "ADD_BASE_LAYER": {
+          "type": "scalar",
+          "dtype": "int16"
+        },
+        "BASE": {
+          "type": "struct",
+          "shape": [
+            1
+          ],
+          "fields": [
+            "BX",
+            "BY",
+            "BZ",
+            "IC"
+          ],
+          "members": {
+            "BX": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            },
+            "BY": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            },
+            "BZ": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            },
+            "IC": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            }
+          }
+        },
+        "INDEX": {
+          "type": "struct",
+          "shape": [
+            1
+          ],
+          "fields": [
+            "SIMPLE",
+            "BITPIX",
+            "NAXIS",
+            "NAXIS1",
+            "NAXIS2",
+            "WCSNAME",
+            "CRPIX1",
+            "CRVAL1",
+            "CTYPE1",
+            "CUNIT1",
+            "CDELT1",
+            "CRPIX2",
+            "CRVAL2",
+            "CTYPE2",
+            "CUNIT2",
+            "CDELT2",
+            "CROTA2",
+            "DATE_D$OBS",
+            "DSUN_OBS",
+            "SOLAR_B0",
+            "HGLN_OBS",
+            "HGLT_OBS",
+            "CRLN_OBS",
+            "CRLT_OBS",
+            "DATE_OBS",
+            "COMMENT",
+            "HISTORY"
+          ],
+          "members": {
+            "SIMPLE": {
+              "type": "scalar",
+              "dtype": "int16"
+            },
+            "BITPIX": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "NAXIS": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "NAXIS1": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "NAXIS2": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "WCSNAME": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CRPIX1": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRVAL1": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CTYPE1": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CUNIT1": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CDELT1": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRPIX2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRVAL2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CTYPE2": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CUNIT2": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CDELT2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CROTA2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "DATE_D$OBS": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "DSUN_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "SOLAR_B0": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "HGLN_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "HGLT_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRLN_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRLT_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "DATE_OBS": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "COMMENT": {
+              "type": "array",
+              "shape": [
+                5
+              ],
+              "dtype": "object"
+            },
+            "HISTORY": {
+              "type": "array",
+              "shape": [
+                5
+              ],
+              "dtype": "object"
+            }
+          }
+        },
+        "REFMAPS": {
+          "type": "struct",
+          "shape": [
+            1
+          ],
+          "fields": [
+            "PLOT_TYPE",
+            "OMAP",
+            "OINDEX",
+            "OPROP",
+            "FREE_VAR__DEFINE_PLACEHOLDER",
+            "DOTPROP_DUMMY",
+            "IDL_OBJECT_TOP",
+            "__OBJ__",
+            "IDL_OBJECT_BOTTOM"
+          ],
+          "members": {
+            "PLOT_TYPE": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "OMAP": {
+              "type": "struct",
+              "shape": [
+                1
+              ],
+              "fields": [
+                "ADD_SIZE",
+                "INIT_SIZE",
+                "LIST",
+                "POINTER"
+              ]
+            },
+            "OINDEX": {
+              "type": "struct",
+              "shape": [
+                1
+              ],
+              "fields": [
+                "ADD_SIZE",
+                "INIT_SIZE",
+                "LIST",
+                "POINTER"
+              ]
+            },
+            "OPROP": {
+              "type": "struct",
+              "shape": [
+                1
+              ],
+              "fields": [
+                "ADD_SIZE",
+                "INIT_SIZE",
+                "LIST",
+                "POINTER"
+              ]
+            },
+            "FREE_VAR__DEFINE_PLACEHOLDER": {
+              "type": "scalar",
+              "dtype": "int16"
+            },
+            "DOTPROP_DUMMY": {
+              "type": "scalar",
+              "dtype": "uint8"
+            },
+            "IDL_OBJECT_TOP": {
+              "type": "scalar",
+              "dtype": "int64"
+            },
+            "__OBJ__": {
+              "type": "scalar",
+              "dtype": "NoneType"
+            },
+            "IDL_OBJECT_BOTTOM": {
+              "type": "scalar",
+              "dtype": "int64"
+            }
+          }
+        },
+        "ID": {
+          "type": "scalar",
+          "dtype": "bytes"
+        },
+        "EXECUTE": {
+          "type": "scalar",
+          "dtype": "bytes"
+        }
+      },
+      "diff_from_prev": {
+        "added": [],
+        "removed": [],
+        "changed": []
+      },
+      "prev_stage": "NONE"
+    },
+    {
+      "file": "hmi.M_720s.20240511_235843.E73S3CR.CEA.BND.sav",
+      "stage": "BND",
+      "box_name": "box",
+      "fields": {
+        "BX": {
+          "type": "array",
+          "shape": [
+            64,
+            64,
+            64
+          ],
+          "dtype": ">f8"
+        },
+        "BY": {
+          "type": "array",
+          "shape": [
+            64,
+            64,
+            64
+          ],
+          "dtype": ">f8"
+        },
+        "BZ": {
+          "type": "array",
+          "shape": [
+            64,
+            64,
+            64
+          ],
+          "dtype": ">f8"
+        },
+        "DR": {
+          "type": "array",
+          "shape": [
+            3
+          ],
+          "dtype": ">f8"
+        },
+        "ADD_BASE_LAYER": {
+          "type": "scalar",
+          "dtype": "int16"
+        },
+        "BASE": {
+          "type": "struct",
+          "shape": [
+            1
+          ],
+          "fields": [
+            "BX",
+            "BY",
+            "BZ",
+            "IC"
+          ],
+          "members": {
+            "BX": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            },
+            "BY": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            },
+            "BZ": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            },
+            "IC": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            }
+          }
+        },
+        "INDEX": {
+          "type": "struct",
+          "shape": [
+            1
+          ],
+          "fields": [
+            "SIMPLE",
+            "BITPIX",
+            "NAXIS",
+            "NAXIS1",
+            "NAXIS2",
+            "WCSNAME",
+            "CRPIX1",
+            "CRVAL1",
+            "CTYPE1",
+            "CUNIT1",
+            "CDELT1",
+            "CRPIX2",
+            "CRVAL2",
+            "CTYPE2",
+            "CUNIT2",
+            "CDELT2",
+            "CROTA2",
+            "DATE_D$OBS",
+            "DSUN_OBS",
+            "SOLAR_B0",
+            "HGLN_OBS",
+            "HGLT_OBS",
+            "CRLN_OBS",
+            "CRLT_OBS",
+            "DATE_OBS",
+            "COMMENT",
+            "HISTORY"
+          ],
+          "members": {
+            "SIMPLE": {
+              "type": "scalar",
+              "dtype": "int16"
+            },
+            "BITPIX": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "NAXIS": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "NAXIS1": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "NAXIS2": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "WCSNAME": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CRPIX1": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRVAL1": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CTYPE1": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CUNIT1": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CDELT1": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRPIX2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRVAL2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CTYPE2": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CUNIT2": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CDELT2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CROTA2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "DATE_D$OBS": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "DSUN_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "SOLAR_B0": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "HGLN_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "HGLT_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRLN_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRLT_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "DATE_OBS": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "COMMENT": {
+              "type": "array",
+              "shape": [
+                5
+              ],
+              "dtype": "object"
+            },
+            "HISTORY": {
+              "type": "array",
+              "shape": [
+                5
+              ],
+              "dtype": "object"
+            }
+          }
+        },
+        "REFMAPS": {
+          "type": "struct",
+          "shape": [
+            1
+          ],
+          "fields": [
+            "PLOT_TYPE",
+            "OMAP",
+            "OINDEX",
+            "OPROP",
+            "FREE_VAR__DEFINE_PLACEHOLDER",
+            "DOTPROP_DUMMY",
+            "IDL_OBJECT_TOP",
+            "__OBJ__",
+            "IDL_OBJECT_BOTTOM"
+          ],
+          "members": {
+            "PLOT_TYPE": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "OMAP": {
+              "type": "struct",
+              "shape": [
+                1
+              ],
+              "fields": [
+                "ADD_SIZE",
+                "INIT_SIZE",
+                "LIST",
+                "POINTER"
+              ]
+            },
+            "OINDEX": {
+              "type": "struct",
+              "shape": [
+                1
+              ],
+              "fields": [
+                "ADD_SIZE",
+                "INIT_SIZE",
+                "LIST",
+                "POINTER"
+              ]
+            },
+            "OPROP": {
+              "type": "struct",
+              "shape": [
+                1
+              ],
+              "fields": [
+                "ADD_SIZE",
+                "INIT_SIZE",
+                "LIST",
+                "POINTER"
+              ]
+            },
+            "FREE_VAR__DEFINE_PLACEHOLDER": {
+              "type": "scalar",
+              "dtype": "int16"
+            },
+            "DOTPROP_DUMMY": {
+              "type": "scalar",
+              "dtype": "uint8"
+            },
+            "IDL_OBJECT_TOP": {
+              "type": "scalar",
+              "dtype": "int64"
+            },
+            "__OBJ__": {
+              "type": "scalar",
+              "dtype": "NoneType"
+            },
+            "IDL_OBJECT_BOTTOM": {
+              "type": "scalar",
+              "dtype": "int64"
+            }
+          }
+        },
+        "ID": {
+          "type": "scalar",
+          "dtype": "bytes"
+        },
+        "EXECUTE": {
+          "type": "scalar",
+          "dtype": "bytes"
+        }
+      },
+      "diff_from_prev": {
+        "added": [],
+        "removed": [],
+        "changed": []
+      },
+      "prev_stage": "POT"
+    },
+    {
+      "file": "hmi.M_720s.20240511_235843.E73S3CR.CEA.NAS.sav",
+      "stage": "NAS",
+      "box_name": "box",
+      "fields": {
+        "BX": {
+          "type": "array",
+          "shape": [
+            64,
+            64,
+            64
+          ],
+          "dtype": ">f8"
+        },
+        "BY": {
+          "type": "array",
+          "shape": [
+            64,
+            64,
+            64
+          ],
+          "dtype": ">f8"
+        },
+        "BZ": {
+          "type": "array",
+          "shape": [
+            64,
+            64,
+            64
+          ],
+          "dtype": ">f8"
+        },
+        "DR": {
+          "type": "array",
+          "shape": [
+            3
+          ],
+          "dtype": ">f8"
+        },
+        "ADD_BASE_LAYER": {
+          "type": "scalar",
+          "dtype": "int16"
+        },
+        "BASE": {
+          "type": "struct",
+          "shape": [
+            1
+          ],
+          "fields": [
+            "BX",
+            "BY",
+            "BZ",
+            "IC"
+          ],
+          "members": {
+            "BX": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            },
+            "BY": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            },
+            "BZ": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            },
+            "IC": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            }
+          }
+        },
+        "INDEX": {
+          "type": "struct",
+          "shape": [
+            1
+          ],
+          "fields": [
+            "SIMPLE",
+            "BITPIX",
+            "NAXIS",
+            "NAXIS1",
+            "NAXIS2",
+            "WCSNAME",
+            "CRPIX1",
+            "CRVAL1",
+            "CTYPE1",
+            "CUNIT1",
+            "CDELT1",
+            "CRPIX2",
+            "CRVAL2",
+            "CTYPE2",
+            "CUNIT2",
+            "CDELT2",
+            "CROTA2",
+            "DATE_D$OBS",
+            "DSUN_OBS",
+            "SOLAR_B0",
+            "HGLN_OBS",
+            "HGLT_OBS",
+            "CRLN_OBS",
+            "CRLT_OBS",
+            "DATE_OBS",
+            "COMMENT",
+            "HISTORY"
+          ],
+          "members": {
+            "SIMPLE": {
+              "type": "scalar",
+              "dtype": "int16"
+            },
+            "BITPIX": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "NAXIS": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "NAXIS1": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "NAXIS2": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "WCSNAME": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CRPIX1": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRVAL1": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CTYPE1": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CUNIT1": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CDELT1": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRPIX2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRVAL2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CTYPE2": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CUNIT2": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CDELT2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CROTA2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "DATE_D$OBS": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "DSUN_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "SOLAR_B0": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "HGLN_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "HGLT_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRLN_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRLT_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "DATE_OBS": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "COMMENT": {
+              "type": "array",
+              "shape": [
+                5
+              ],
+              "dtype": "object"
+            },
+            "HISTORY": {
+              "type": "array",
+              "shape": [
+                5
+              ],
+              "dtype": "object"
+            }
+          }
+        },
+        "REFMAPS": {
+          "type": "struct",
+          "shape": [
+            1
+          ],
+          "fields": [
+            "PLOT_TYPE",
+            "OMAP",
+            "OINDEX",
+            "OPROP",
+            "FREE_VAR__DEFINE_PLACEHOLDER",
+            "DOTPROP_DUMMY",
+            "IDL_OBJECT_TOP",
+            "__OBJ__",
+            "IDL_OBJECT_BOTTOM"
+          ],
+          "members": {
+            "PLOT_TYPE": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "OMAP": {
+              "type": "struct",
+              "shape": [
+                1
+              ],
+              "fields": [
+                "ADD_SIZE",
+                "INIT_SIZE",
+                "LIST",
+                "POINTER"
+              ]
+            },
+            "OINDEX": {
+              "type": "struct",
+              "shape": [
+                1
+              ],
+              "fields": [
+                "ADD_SIZE",
+                "INIT_SIZE",
+                "LIST",
+                "POINTER"
+              ]
+            },
+            "OPROP": {
+              "type": "struct",
+              "shape": [
+                1
+              ],
+              "fields": [
+                "ADD_SIZE",
+                "INIT_SIZE",
+                "LIST",
+                "POINTER"
+              ]
+            },
+            "FREE_VAR__DEFINE_PLACEHOLDER": {
+              "type": "scalar",
+              "dtype": "int16"
+            },
+            "DOTPROP_DUMMY": {
+              "type": "scalar",
+              "dtype": "uint8"
+            },
+            "IDL_OBJECT_TOP": {
+              "type": "scalar",
+              "dtype": "int64"
+            },
+            "__OBJ__": {
+              "type": "scalar",
+              "dtype": "NoneType"
+            },
+            "IDL_OBJECT_BOTTOM": {
+              "type": "scalar",
+              "dtype": "int64"
+            }
+          }
+        },
+        "ID": {
+          "type": "scalar",
+          "dtype": "bytes"
+        },
+        "EXECUTE": {
+          "type": "scalar",
+          "dtype": "bytes"
+        }
+      },
+      "diff_from_prev": {
+        "added": [],
+        "removed": [],
+        "changed": []
+      },
+      "prev_stage": "BND"
+    },
+    {
+      "file": "hmi.M_720s.20240511_235843.E73S3CR.CEA.NAS.GEN.sav",
+      "stage": "GEN",
+      "box_name": "box",
+      "fields": {
+        "DR": {
+          "type": "array",
+          "shape": [
+            3
+          ],
+          "dtype": ">f8"
+        },
+        "ADD_BASE_LAYER": {
+          "type": "scalar",
+          "dtype": "int16"
+        },
+        "BASE": {
+          "type": "struct",
+          "shape": [
+            1
+          ],
+          "fields": [
+            "BX",
+            "BY",
+            "BZ",
+            "IC"
+          ],
+          "members": {
+            "BX": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            },
+            "BY": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            },
+            "BZ": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            },
+            "IC": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            }
+          }
+        },
+        "INDEX": {
+          "type": "struct",
+          "shape": [
+            1
+          ],
+          "fields": [
+            "SIMPLE",
+            "BITPIX",
+            "NAXIS",
+            "NAXIS1",
+            "NAXIS2",
+            "WCSNAME",
+            "CRPIX1",
+            "CRVAL1",
+            "CTYPE1",
+            "CUNIT1",
+            "CDELT1",
+            "CRPIX2",
+            "CRVAL2",
+            "CTYPE2",
+            "CUNIT2",
+            "CDELT2",
+            "CROTA2",
+            "DATE_D$OBS",
+            "DSUN_OBS",
+            "SOLAR_B0",
+            "HGLN_OBS",
+            "HGLT_OBS",
+            "CRLN_OBS",
+            "CRLT_OBS",
+            "DATE_OBS",
+            "COMMENT",
+            "HISTORY"
+          ],
+          "members": {
+            "SIMPLE": {
+              "type": "scalar",
+              "dtype": "int16"
+            },
+            "BITPIX": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "NAXIS": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "NAXIS1": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "NAXIS2": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "WCSNAME": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CRPIX1": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRVAL1": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CTYPE1": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CUNIT1": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CDELT1": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRPIX2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRVAL2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CTYPE2": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CUNIT2": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CDELT2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CROTA2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "DATE_D$OBS": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "DSUN_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "SOLAR_B0": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "HGLN_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "HGLT_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRLN_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRLT_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "DATE_OBS": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "COMMENT": {
+              "type": "array",
+              "shape": [
+                5
+              ],
+              "dtype": "object"
+            },
+            "HISTORY": {
+              "type": "array",
+              "shape": [
+                5
+              ],
+              "dtype": "object"
+            }
+          }
+        },
+        "REFMAPS": {
+          "type": "struct",
+          "shape": [
+            1
+          ],
+          "fields": [
+            "PLOT_TYPE",
+            "OMAP",
+            "OINDEX",
+            "OPROP",
+            "FREE_VAR__DEFINE_PLACEHOLDER",
+            "DOTPROP_DUMMY",
+            "IDL_OBJECT_TOP",
+            "__OBJ__",
+            "IDL_OBJECT_BOTTOM"
+          ],
+          "members": {
+            "PLOT_TYPE": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "OMAP": {
+              "type": "struct",
+              "shape": [
+                1
+              ],
+              "fields": [
+                "ADD_SIZE",
+                "INIT_SIZE",
+                "LIST",
+                "POINTER"
+              ]
+            },
+            "OINDEX": {
+              "type": "struct",
+              "shape": [
+                1
+              ],
+              "fields": [
+                "ADD_SIZE",
+                "INIT_SIZE",
+                "LIST",
+                "POINTER"
+              ]
+            },
+            "OPROP": {
+              "type": "struct",
+              "shape": [
+                1
+              ],
+              "fields": [
+                "ADD_SIZE",
+                "INIT_SIZE",
+                "LIST",
+                "POINTER"
+              ]
+            },
+            "FREE_VAR__DEFINE_PLACEHOLDER": {
+              "type": "scalar",
+              "dtype": "int16"
+            },
+            "DOTPROP_DUMMY": {
+              "type": "scalar",
+              "dtype": "uint8"
+            },
+            "IDL_OBJECT_TOP": {
+              "type": "scalar",
+              "dtype": "int64"
+            },
+            "__OBJ__": {
+              "type": "scalar",
+              "dtype": "NoneType"
+            },
+            "IDL_OBJECT_BOTTOM": {
+              "type": "scalar",
+              "dtype": "int64"
+            }
+          }
+        },
+        "ID": {
+          "type": "scalar",
+          "dtype": "bytes"
+        },
+        "EXECUTE": {
+          "type": "scalar",
+          "dtype": "bytes"
+        },
+        "STATUS": {
+          "type": "array",
+          "shape": [
+            64,
+            64,
+            64
+          ],
+          "dtype": "uint8"
+        },
+        "STARTIDX": {
+          "type": "array",
+          "shape": [
+            64,
+            64,
+            64
+          ],
+          "dtype": ">i4"
+        },
+        "ENDIDX": {
+          "type": "array",
+          "shape": [
+            64,
+            64,
+            64
+          ],
+          "dtype": ">i4"
+        },
+        "AVFIELD": {
+          "type": "array",
+          "shape": [
+            64,
+            64,
+            64
+          ],
+          "dtype": ">f8"
+        },
+        "PHYSLENGTH": {
+          "type": "array",
+          "shape": [
+            64,
+            64,
+            64
+          ],
+          "dtype": ">f8"
+        },
+        "BCUBE": {
+          "type": "array",
+          "shape": [
+            3,
+            64,
+            64,
+            64
+          ],
+          "dtype": ">f4"
+        }
+      },
+      "diff_from_prev": {
+        "added": [
+          "AVFIELD",
+          "BCUBE",
+          "ENDIDX",
+          "PHYSLENGTH",
+          "STARTIDX",
+          "STATUS"
+        ],
+        "removed": [
+          "BX",
+          "BY",
+          "BZ"
+        ],
+        "changed": []
+      },
+      "prev_stage": "NAS"
+    },
+    {
+      "file": "hmi.M_720s.20240511_235843.E73S3CR.CEA.NAS.CHR.sav",
+      "stage": "CHR",
+      "box_name": "box",
+      "fields": {
+        "DR": {
+          "type": "array",
+          "shape": [
+            3
+          ],
+          "dtype": ">f8"
+        },
+        "ADD_BASE_LAYER": {
+          "type": "scalar",
+          "dtype": "int16"
+        },
+        "INDEX": {
+          "type": "struct",
+          "shape": [
+            1
+          ],
+          "fields": [
+            "SIMPLE",
+            "BITPIX",
+            "NAXIS",
+            "NAXIS1",
+            "NAXIS2",
+            "WCSNAME",
+            "CRPIX1",
+            "CRVAL1",
+            "CTYPE1",
+            "CUNIT1",
+            "CDELT1",
+            "CRPIX2",
+            "CRVAL2",
+            "CTYPE2",
+            "CUNIT2",
+            "CDELT2",
+            "CROTA2",
+            "DATE_D$OBS",
+            "DSUN_OBS",
+            "SOLAR_B0",
+            "HGLN_OBS",
+            "HGLT_OBS",
+            "CRLN_OBS",
+            "CRLT_OBS",
+            "DATE_OBS",
+            "COMMENT",
+            "HISTORY"
+          ],
+          "members": {
+            "SIMPLE": {
+              "type": "scalar",
+              "dtype": "int16"
+            },
+            "BITPIX": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "NAXIS": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "NAXIS1": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "NAXIS2": {
+              "type": "scalar",
+              "dtype": "int32"
+            },
+            "WCSNAME": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CRPIX1": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRVAL1": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CTYPE1": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CUNIT1": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CDELT1": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRPIX2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRVAL2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CTYPE2": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CUNIT2": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "CDELT2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CROTA2": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "DATE_D$OBS": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "DSUN_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "SOLAR_B0": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "HGLN_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "HGLT_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRLN_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "CRLT_OBS": {
+              "type": "scalar",
+              "dtype": "float64"
+            },
+            "DATE_OBS": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "COMMENT": {
+              "type": "array",
+              "shape": [
+                5
+              ],
+              "dtype": "object"
+            },
+            "HISTORY": {
+              "type": "array",
+              "shape": [
+                5
+              ],
+              "dtype": "object"
+            }
+          }
+        },
+        "REFMAPS": {
+          "type": "struct",
+          "shape": [
+            1
+          ],
+          "fields": [
+            "PLOT_TYPE",
+            "OMAP",
+            "OINDEX",
+            "OPROP",
+            "FREE_VAR__DEFINE_PLACEHOLDER",
+            "DOTPROP_DUMMY",
+            "IDL_OBJECT_TOP",
+            "__OBJ__",
+            "IDL_OBJECT_BOTTOM"
+          ],
+          "members": {
+            "PLOT_TYPE": {
+              "type": "scalar",
+              "dtype": "bytes"
+            },
+            "OMAP": {
+              "type": "struct",
+              "shape": [
+                1
+              ],
+              "fields": [
+                "ADD_SIZE",
+                "INIT_SIZE",
+                "LIST",
+                "POINTER"
+              ]
+            },
+            "OINDEX": {
+              "type": "struct",
+              "shape": [
+                1
+              ],
+              "fields": [
+                "ADD_SIZE",
+                "INIT_SIZE",
+                "LIST",
+                "POINTER"
+              ]
+            },
+            "OPROP": {
+              "type": "struct",
+              "shape": [
+                1
+              ],
+              "fields": [
+                "ADD_SIZE",
+                "INIT_SIZE",
+                "LIST",
+                "POINTER"
+              ]
+            },
+            "FREE_VAR__DEFINE_PLACEHOLDER": {
+              "type": "scalar",
+              "dtype": "int16"
+            },
+            "DOTPROP_DUMMY": {
+              "type": "scalar",
+              "dtype": "uint8"
+            },
+            "IDL_OBJECT_TOP": {
+              "type": "scalar",
+              "dtype": "int64"
+            },
+            "__OBJ__": {
+              "type": "scalar",
+              "dtype": "NoneType"
+            },
+            "IDL_OBJECT_BOTTOM": {
+              "type": "scalar",
+              "dtype": "int64"
+            }
+          }
+        },
+        "ID": {
+          "type": "scalar",
+          "dtype": "bytes"
+        },
+        "EXECUTE": {
+          "type": "scalar",
+          "dtype": "bytes"
+        },
+        "STATUS": {
+          "type": "array",
+          "shape": [
+            64,
+            64,
+            64
+          ],
+          "dtype": "uint8"
+        },
+        "STARTIDX": {
+          "type": "array",
+          "shape": [
+            64,
+            64,
+            64
+          ],
+          "dtype": ">i4"
+        },
+        "ENDIDX": {
+          "type": "array",
+          "shape": [
+            64,
+            64,
+            64
+          ],
+          "dtype": ">i4"
+        },
+        "AVFIELD": {
+          "type": "array",
+          "shape": [
+            64,
+            64,
+            64
+          ],
+          "dtype": ">f8"
+        },
+        "PHYSLENGTH": {
+          "type": "array",
+          "shape": [
+            64,
+            64,
+            64
+          ],
+          "dtype": ">f8"
+        },
+        "BCUBE": {
+          "type": "array",
+          "shape": [
+            3,
+            64,
+            64,
+            64
+          ],
+          "dtype": ">f4"
+        },
+        "CHROMO_IDX": {
+          "type": "array",
+          "shape": [
+            328170
+          ],
+          "dtype": ">i4"
+        },
+        "CHROMO_BCUBE": {
+          "type": "array",
+          "shape": [
+            3,
+            90,
+            64,
+            64
+          ],
+          "dtype": ">f4"
+        },
+        "N_HTOT": {
+          "type": "array",
+          "shape": [
+            328170
+          ],
+          "dtype": ">f4"
+        },
+        "N_HI": {
+          "type": "array",
+          "shape": [
+            328170
+          ],
+          "dtype": ">f4"
+        },
+        "N_P": {
+          "type": "array",
+          "shape": [
+            328170
+          ],
+          "dtype": ">f4"
+        },
+        "DZ": {
+          "type": "array",
+          "shape": [
+            152,
+            64,
+            64
+          ],
+          "dtype": ">f8"
+        },
+        "CHROMO_N": {
+          "type": "array",
+          "shape": [
+            328170
+          ],
+          "dtype": ">f4"
+        },
+        "CHROMO_T": {
+          "type": "array",
+          "shape": [
+            328170
+          ],
+          "dtype": ">f4"
+        },
+        "CHROMO_LAYERS": {
+          "type": "scalar",
+          "dtype": "int32"
+        },
+        "TR": {
+          "type": "array",
+          "shape": [
+            64,
+            64
+          ],
+          "dtype": ">i4"
+        },
+        "TR_H": {
+          "type": "array",
+          "shape": [
+            64,
+            64
+          ],
+          "dtype": ">f8"
+        },
+        "CORONA_BASE": {
+          "type": "scalar",
+          "dtype": "int32"
+        },
+        "BASE": {
+          "type": "struct",
+          "shape": [
+            1
+          ],
+          "fields": [
+            "BX",
+            "BY",
+            "BZ",
+            "IC",
+            "CHROMO_MASK"
+          ],
+          "members": {
+            "BX": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            },
+            "BY": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            },
+            "BZ": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            },
+            "IC": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">f8"
+            },
+            "CHROMO_MASK": {
+              "type": "array",
+              "shape": [
+                64,
+                64
+              ],
+              "dtype": ">i2"
+            }
+          }
+        }
+      },
+      "diff_from_prev": {
+        "added": [
+          "CHROMO_BCUBE",
+          "CHROMO_IDX",
+          "CHROMO_LAYERS",
+          "CHROMO_N",
+          "CHROMO_T",
+          "CORONA_BASE",
+          "DZ",
+          "N_HI",
+          "N_HTOT",
+          "N_P",
+          "TR",
+          "TR_H"
+        ],
+        "removed": [],
+        "changed": [
+          "BASE"
+        ]
+      },
+      "prev_stage": "GEN"
+    }
+  ]
+}

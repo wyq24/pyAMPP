@@ -17,19 +17,24 @@ def combo_model_idl(bndbox, box):
     return combo_model(box, dr, base_bz, base_ic)
 
 def combo_model(box, dr, base_bz, base_ic, chromo_mask=None):
+    bx, by, bz = (box[k] for k in ("bx", "by", "bz"))
+    msize = bx.shape
+
     if chromo_mask is None:
         chromo_mask = decompose(base_bz, base_ic)
+
+    if chromo_mask.shape != msize[:2]:
+        raise ValueError(
+            f"chromo_mask shape {chromo_mask.shape} does not match box xy shape {msize[:2]}"
+        )
+
     chromo = populate_chromo(chromo_mask)
-
     csize = chromo['nh'].shape
-
-    bx, by, bz = (box[k] for k in ("bx", "by", "bz"))
-
-    msize = bx.shape
     box_bcube = np.zeros((*msize, 3), dtype=np.float32)
-    box_bcube[:, :, :, 0] = bx[:,:,::-1,:]
-    box_bcube[:, :, :, 1] = by[:,:,::-1,:]
-    box_bcube[:, :, :, 2] = bz[:,:,::-1,:]
+    # GX field cubes are (nx, ny, nz); only the vertical axis is reversed here.
+    box_bcube[:, :, :, 0] = bx[:, :, ::-1]
+    box_bcube[:, :, :, 1] = by[:, :, ::-1]
+    box_bcube[:, :, :, 2] = bz[:, :, ::-1]
 
     dz = np.ones(msize, dtype=np.float64) * dr[2]
     z = np.zeros(msize, dtype=np.float64)

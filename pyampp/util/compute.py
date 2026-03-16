@@ -18,6 +18,8 @@ import locale
 from sunpy.map import all_coordinates_from_map
 import h5py
 
+from pyampp.gxbox.boxutils import load_sunpy_map_compat, map_from_data_header_compat
+
 # from .gx_chromo.combo_model import combo_model
 
 os.environ['OMP_NUM_THREADS'] = '16'  # number of parallel threads
@@ -89,9 +91,9 @@ def hmi_b2ptr(map_field, map_inclination, map_azimuth):
 
     # Preserve HMI RSUN in WCS metadata for downstream reprojection parity.
     header = map_field.meta
-    map_bp = sunpy.map.Map(bptr[0, :, :], header)
-    map_bt = sunpy.map.Map(bptr[1, :, :], header)
-    map_br = sunpy.map.Map(bptr[2, :, :], header)
+    map_bp = map_from_data_header_compat(bptr[0, :, :], header)
+    map_bt = map_from_data_header_compat(bptr[1, :, :], header)
+    map_br = map_from_data_header_compat(bptr[2, :, :], header)
 
     return map_bp, map_bt, map_br
 
@@ -129,13 +131,13 @@ def ampp_field(dl_path, out_model, x, y, dx, dy, dz, res):
     # wcs_rsun = 6.96e8
     res_km = res.to(u.km).value
 
-    map_field = sunpy.map.Map(field_path)
-    map_inclination = sunpy.map.Map(incli_path)
-    map_azimuth = sunpy.map.Map(azimu_path)
-    map_disambig = sunpy.map.Map(disam_path)
+    map_field = load_sunpy_map_compat(field_path)
+    map_inclination = load_sunpy_map_compat(incli_path)
+    map_azimuth = load_sunpy_map_compat(azimu_path)
+    map_disambig = load_sunpy_map_compat(disam_path)
 
-    map_conti = sunpy.map.Map(conti_path)
-    map_losma = sunpy.map.Map(losma_path)
+    map_conti = load_sunpy_map_compat(conti_path)
+    map_losma = load_sunpy_map_compat(losma_path)
 
     dis = map_disambig.data
     map_azimuth.data[:, :] = map_azimuth.data + dis * 180.

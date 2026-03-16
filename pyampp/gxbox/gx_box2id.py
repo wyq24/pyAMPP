@@ -37,11 +37,16 @@ def _normalize_box_for_id(box):
         return box
     chromo = box.get("chromo", {}) if isinstance(box.get("chromo", {}), dict) else {}
     corona = box.get("corona", {}) if isinstance(box.get("corona", {}), dict) else {}
+    lines = box.get("lines", {}) if isinstance(box.get("lines", {}), dict) else {}
     merged = {}
     # Coronal field provides the base volume size (IDL Bx/By/Bz or bcube equivalent).
-    for key in ("bx", "by", "bz", "Bx", "By", "Bz", "bcube", "dr", "start_idx", "startidx"):
+    for key in ("bx", "by", "bz", "Bx", "By", "Bz", "bcube", "dr", "start_idx", "startidx", "corona_base"):
         if key in corona:
             merged[key] = corona[key]
+    # Line-tracing tags used by gx_box2id.
+    for key in ("start_idx", "startidx"):
+        if key in lines and key not in merged:
+            merged[key] = lines[key]
     # Chromo-specific tags used by gx_box2id.
     for key in ("chromo_idx", "chromo_t", "chromo_n", "chromo_layers", "corona_base"):
         if key in chromo:
@@ -54,13 +59,13 @@ def _normalize_box_for_id(box):
     return merged if merged else box
 
 
-def gx_box2id(box, tr_mask: np.ndarray | None = None):
+def gx_box2id(box, tr_mask: np.ndarray | None = None, return_corona_base: bool = False):
     """Build voxel_id 3D array from an AMPP/GX box structure.
 
     Port of IDL `gx_box2id.pro` with parity-oriented behavior.
     """
     if box is None:
-        return None
+        return (None, None) if return_corona_base else None
     box = _normalize_box_for_id(box)
 
     bx = _find_field(box, ("Bx", "bx"))
@@ -70,7 +75,7 @@ def gx_box2id(box, tr_mask: np.ndarray | None = None):
     bcube = _find_field(box, ("bcube",))
     valid_b = bcube is not None
     if not (valid_bxbybz or valid_b):
-        return None
+        return (None, None) if return_corona_base else None
 
     dr = np.asarray(_find_field(box, ("dr",)), dtype=float)
     if dr.size < 3:
@@ -84,8 +89,16 @@ def gx_box2id(box, tr_mask: np.ndarray | None = None):
             start_idx = np.asarray(start_idx)
             nonzero_vals = start_idx[start_idx != 0]
             if nonzero_vals.size > 0:
-                # IDL array_indices parity: interpret indices in Fortran order.
-                _, _, z_idx = np.unravel_index(nonzero_vals.astype(np.int64), start_idx.shape, order="F")
+                # IDL parity: STARTIDX can be 3D or flattened 1D Fortran-order indexing.
+                if start_idx.ndim == 1:
+                    if valid_bxbybz:
+                        sx, sy, _ = np.shape(bx)
+                    else:
+                        sx, sy, _ = np.shape(bcube[..., 0])
+                    plane = int(sx) * int(sy)
+                    z_idx = nonzero_vals.astype(np.int64) // plane
+                else:
+                    _, _, z_idx = np.unravel_index(nonzero_vals.astype(np.int64), start_idx.shape, order="F")
                 corona_base = int(np.min(z_idx))
             else:
                 corona_base = int(np.ceil(_gx_tr_height_sunradius() / dr[2]))
@@ -180,4 +193,6 @@ def gx_box2id(box, tr_mask: np.ndarray | None = None):
                 flat[tr_idx] = np.uint32(flat[tr_idx] - mask[xi, yi] * euv)
                 vid = flat.reshape(vid.shape, order="F")
 
+    if return_corona_base:
+        return vid, int(corona_base)
     return vid

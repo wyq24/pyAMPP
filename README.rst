@@ -15,9 +15,11 @@ Format and viewer references:
 
 - Upgraded HDF5 stage format (NONE/BND/POT/NAS/NAS.GEN/NAS.CHR):
   ``docs/model_hdf5_format.rst``
-- GUI workflow and command mapping:
+- Practical ``gx-fov2box`` CLI guide:
+  ``docs/gx_fov2box_usage.rst``
+- Main GUI workflow and command mapping:
   ``docs/gui_workflow.rst``
-- Viewer guide (``gxbox-view`` and ``gxrefmap-view``):
+- Viewer guide (2D selector, 3D viewer, and refmap browser):
   ``docs/viewers.rst``
 - Release notes:
   ``CHANGELOG.rst``
@@ -32,7 +34,7 @@ Overview
 - Performing magnetic field extrapolations (Potential and/or Nonlinear Force-Free Field)
 - Generating synthetic plasma emission models assuming either steady-state or impulsive heating
 - Producing non-LTE chromospheric models constrained by photospheric measurements
-- Enabling interactive 3D inspection and customization through user-friendly GUIs
+- Enabling interactive inspection and customization through focused GUIs
 
 
 Installation
@@ -83,14 +85,20 @@ The instructions below use Conda as an example:
 
       pip install -U sunpy[all]
 
-Main Interfaces
----------------
+Main Applications
+-----------------
 
-pyAMPP provides a GUI for building a reproducible CLI command and separate tools for model generation and visualization:
+pyAMPP exposes one main GUI and three focused command-line tools:
 
-1. **pyampp** – Launches a GUI to select observation time, coordinates, and options. It generates a `gx-fov2box` CLI command (shown above the Run button) and can launch it.
-2. **gx-fov2box** – Pure CLI model generator (IDL `gx_fov2box` equivalent). It saves the requested stages and records the full command in `metadata/execute`.
-3. **gxbox** – Launches the map GUI and 3D visualization for browsing existing models.
+1. **pyampp** – The main desktop application. It is the front-end to ``gx-fov2box``:
+   - captures model parameters,
+   - builds the exact reproducible CLI command,
+   - runs the command,
+   - opens the follow-up viewers when needed.
+2. **gx-fov2box** – Headless model generator (IDL ``gx_fov2box`` equivalent).
+3. **gxbox-view2d** – 2D FOV / box selector for existing ``.h5`` or ``.sav`` models.
+4. **gxbox-view3d** – 3D viewer for existing model HDF5 files.
+5. **gxrefmap-view** – 2D browser for base maps and reference maps stored in model HDF5 files.
 
 Usage Examples
 --------------
@@ -122,40 +130,30 @@ Usage Examples
       --save-potential \
       --save-bounds
 
-**3. Launch the modeling GUI directly (Gxbox Map Viewer)**
+**3. Open the 2D FOV / box selector for an existing model**
 
 .. code-block:: bash
 
-    gxbox \
-      --time "2022-03-30T17:22:37" \
-      --coords 34.44988566346035 14.26110705696788 \
-      --hgs \
-      --box-dims 360 180 200 \
-      --box-res 0.729 \
-      --pad-frac 0.25 \
-      --data-dir /path/to/download_dir \
-      --gxmodel-dir /path/to/gx_models_dir \
-      --external-box /path/to/boxfile.gxbox
+    gxbox-view2d /path/to/model.h5
 
-.. image:: docs/images/gxbox_gui.png
-    :alt: gxbox GUI screenshot
-    :align: center
-    :width: 600px
+**4. Open the 3D viewer for an existing model**
 
-The `Gxbox Map Viewer` GUI automatically downloads the required solar data and builds the 3D model based on the user's input. The resulting model can be visualized in a VTK-based viewer (`Gxbox 3D Viewer`) that supports interactive exploration of the magnetic field structure.
+.. code-block:: bash
 
-Additionally, users can trace and extract magnetic field lines within the 3D model and send them back to the `gxbox` GUI, where they can be overlaid on solar images for contextual visualization.
-
-.. image:: docs/images/MagFieldViewer_gui.png
-    :alt: MagFieldViewer GUI screenshot
-    :align: center
-    :width: 600px
+    gxbox-view3d /path/to/model.h5
 
 Notes:
 
 - `--coords` takes two floats, separated by space (no brackets or commas).
 - One of `--hpc`, `--hgc`, or `--hgs` must be specified to define the coordinate system.
 - Remaining parameters are optional and have default values.
+- The default downloader backend is ``DRMS``.
+- Use ``--use-fido`` to switch to the legacy SunPy/Fido downloader.
+- Use ``--force-download`` to bypass cache reuse and benchmark the downloader path directly.
+- The GUI mirrors these controls with a ``Downloader`` selector and a ``Use cache`` checkbox.
+- The GUI bottom command toolbar includes command-export actions:
+  - copy the current ``gx-fov2box`` command
+  - save the current command as a shell script
 - Set ``PYAMPP_JSOC_NOTIFY_EMAIL`` to override the JSOC export notification email (default: ``suncasa-group@njit.edu``).
 
 Entry-Box Resume / Jump Rules
@@ -165,6 +163,7 @@ Entry-Box Resume / Jump Rules
 
 - ``--rebuild``: ignore stage payload and recompute from ``NONE`` using resolved entry parameters.
 - ``--clone-only``: convert/copy an entry box to normalized HDF5 without recomputation (useful as ``convert-from-sav``).
+- ``--clone-only`` is the exact normalization path. By contrast, ``--jump2chromo`` resumes at CHR and recomputes that stage from the stored entry payload.
 - Without ``--jump2*``, the pipeline starts from the detected entry stage.
 - When ``--entry-box`` contains ``metadata/execute``, ``--data-dir`` and ``--gxmodel-dir`` default from that execute string.
 - Explicit CLI values for ``--data-dir`` / ``--gxmodel-dir`` always override execute-derived defaults.
@@ -176,17 +175,19 @@ Entry-Box Resume / Jump Rules
 - Save requests for stages before the selected start stage are ignored with a warning.
 - In ``--clone-only`` mode, only no-jump or jump-to-self is allowed.
 
-Entrypoints
------------
+Command-Line Tools
+------------------
 
 After installation, the following commands become available:
 
 - ``pyampp``: Launch the command-builder GUI.
 - ``gx-fov2box``: Run the model-generation pipeline headlessly.
-- ``gxbox``: Launch the modeling/visualization GUI.
-- ``gxbox-view``: Open an existing HDF5 model in the 3D viewer.
+- ``gxbox-view2d``: Open the 2D FOV / box selector on an existing model or entry box.
+- ``gxbox-view3d``: Open an existing HDF5 model in the 3D viewer.
 - ``gxrefmap-view``: Open base/refmaps from an HDF5 model in a 2D map browser.
+- ``h5tree``: Print an HDF5 tree (metadata shown by default, plus ``observer/name``, optional ``observer/label`` / ``observer/source``, and ``observer/pb0r/*`` when present; ``--no-metadata`` hides these value lines, ``--meta`` prints them only).
 - ``gx-idl2fov2box``: Translate IDL ``gx_fov2box`` execute strings (or SAV ``EXECUTE``) into Python ``gx-fov2box`` commands.
+- ``gx-fov2box2idl``: Translate Python ``gx-fov2box`` commands (or HDF5 ``metadata/execute``) into simple IDL ``gx_fov2box`` calls.
 
 License
 -------

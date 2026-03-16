@@ -9,13 +9,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyampp"
-version = "0.2.0"
-description = "Automatic Model Suff"
+version = "1.0.0"
+description = "Python Automatic Model Production Pipeline"
 readme = "README.rst"
 requires-python = ">=3.10"
 license = { file = "licenses/LICENSE.rst", content-type = "text/plain" }
 dependencies = ["sunpy[all]",
     "numpy>=1.25",
+    "drms",
     "ipympl",
     "ipywidgets",
     "matplotlib",
@@ -29,16 +30,19 @@ dependencies = ["sunpy[all]",
 
 [project.scripts]
 pyampp = "pyampp.gxbox.gxampp:app"
-gxbox = "pyampp.gxbox.gxbox_factory:app"
-gxbox-view = "pyampp.gxbox.view_h5:main"
+gxbox-view3d = "pyampp.gxbox.view_h5:main"
+gxbox-view2d = "pyampp.gxbox.gxbox_selector_view:main"
+gxbox-corners = "pyampp.gxbox.gxbox_dump_corners:main"
 gx-fov2box = "pyampp.gxbox.gx_fov2box:app"
 gx_fov2box = "pyampp.gxbox.gx_fov2box:app"
 h5tree = "pyampp.util.h5tree:app"
 gxrefmap-view = "pyampp.gxbox.gxrefmap_view:app"
 gx-idl2fov2box = "pyampp.util.idl_execute_to_gxfov2box:main"
+gx-fov2box2idl = "pyampp.util.gxfov2box_to_idl:main"
 
 [project.optional-dependencies]
 tests = [
+    "setuptools_scm",
     "pytest",
     "pytest-doctestplus",
     "pytest-cov"
@@ -57,10 +61,13 @@ zip-safe = false
 include-package-data = true
 
 [tool.setuptools.packages.find]
+include = ["pyampp*"]
+exclude = ["build*", "docs*", "examples*", "reports*"]
 
 [tool.pytest.ini_options]
 testpaths = [
-    "pyampp",
+    "pyampp/tests",
+    "pyampp/test_local",
     "docs",
 ]
 doctest_plus = "enabled"

@@ -27,14 +27,14 @@ except Exception as exc:  # pragma: no cover - ad-hoc script
 
 
 CHR_IDL_TO_H5 = {
-    "DR": "chromo/dr",
-    "STARTIDX": "chromo/start_idx",
-    "ENDIDX": "chromo/end_idx",
-    "AVFIELD": "chromo/av_field",
-    "PHYSLENGTH": "chromo/phys_length",
-    "BCUBE": "chromo/bcube",
+    "DR": ["corona/dr", "lines/dr"],
+    "STARTIDX": "lines/start_idx",
+    "ENDIDX": "lines/end_idx",
+    "AVFIELD": "lines/av_field",
+    "PHYSLENGTH": "lines/phys_length",
+    "BCUBE": ["corona/bx", "corona/by", "corona/bz"],
     "CHROMO_IDX": "chromo/chromo_idx",
-    "CHROMO_BCUBE": "chromo/chromo_bcube",
+    "CHROMO_BCUBE": ["chromo/bx", "chromo/by", "chromo/bz"],
     "N_HTOT": "chromo/n_htot",
     "N_HI": "chromo/n_hi",
     "N_P": "chromo/n_p",
@@ -44,7 +44,7 @@ CHR_IDL_TO_H5 = {
     "CHROMO_LAYERS": "chromo/chromo_layers",
     "TR": "chromo/tr",
     "TR_H": "chromo/tr_h",
-    "CORONA_BASE": "chromo/corona_base",
+    "CORONA_BASE": "corona/corona_base",
 }
 
 NAS_IDL_TO_H5 = {
@@ -57,6 +57,17 @@ POT_IDL_TO_H5 = {
     "BX": "corona/bx",
     "BY": "corona/by",
     "BZ": "corona/bz",
+}
+
+GEN_IDL_TO_H5 = {
+    "BX": "corona/bx",
+    "BY": "corona/by",
+    "BZ": "corona/bz",
+    "DR": ["corona/dr", "lines/dr"],
+    "STARTIDX": "lines/start_idx",
+    "ENDIDX": "lines/end_idx",
+    "AVFIELD": "lines/av_field",
+    "PHYSLENGTH": "lines/phys_length",
 }
 
 
@@ -130,6 +141,8 @@ def _infer_stage(h5_fields: Dict[str, FieldInfo], sav_fields: Dict[str, FieldInf
     h5_keys = set(h5_fields.keys())
     if any(k.startswith("chromo/") for k in h5_keys):
         return "chr"
+    if any(k.startswith("lines/") for k in h5_keys):
+        return "gen"
     if any(k.startswith("corona/") for k in h5_keys):
         return "nas"
     if any(k.startswith("nlfff/") for k in h5_keys):
@@ -141,9 +154,11 @@ def _infer_stage(h5_fields: Dict[str, FieldInfo], sav_fields: Dict[str, FieldInf
         return "nas"
     return "unknown"
 
-def _mapping_for_stage(stage: str) -> Dict[str, str]:
+def _mapping_for_stage(stage: str) -> Dict[str, Any]:
     if stage == "chr":
         return CHR_IDL_TO_H5
+    if stage == "gen":
+        return GEN_IDL_TO_H5
     if stage == "nas":
         return NAS_IDL_TO_H5
     if stage == "pot":
@@ -156,7 +171,7 @@ def main() -> int:
     parser.add_argument("--h5", required=True, help="Path to HDF5 file.")
     parser.add_argument("--sav", required=True, help="Path to IDL .sav file.")
     parser.add_argument("--out", help="Write JSON report to this path.")
-    parser.add_argument("--stage", choices=["auto", "nas", "pot", "chr"], default="auto",
+    parser.add_argument("--stage", choices=["auto", "nas", "pot", "gen", "chr"], default="auto",
                         help="Stage mapping to use (default: auto-detect).")
     args = parser.parse_args()
 
@@ -168,25 +183,29 @@ def main() -> int:
     mapping_table = _mapping_for_stage(stage)
 
     mapping: List[Dict[str, Any]] = []
-    for idl_field, h5_path in mapping_table.items():
-        idl = sav_fields.get(idl_field)
-        h5 = h5_fields.get(h5_path)
-        note = ""
-        if idl and h5:
-            note = _note_shape(idl.shape, h5.shape)
-        mapping.append(
-            {
-                "idl_field": idl_field,
-                "h5_path": h5_path,
-                "idl_shape": idl.shape if idl else None,
-                "h5_shape": h5.shape if h5 else None,
-                "idl_dtype": idl.dtype if idl else None,
-                "h5_dtype": h5.dtype if h5 else None,
-                "note": note,
-            }
-        )
+    mapped_h5_paths = []
+    for idl_field, h5_path_or_list in mapping_table.items():
+        h5_paths = h5_path_or_list if isinstance(h5_path_or_list, list) else [h5_path_or_list]
+        for h5_path in h5_paths:
+            mapped_h5_paths.append(h5_path)
+            idl = sav_fields.get(idl_field)
+            h5 = h5_fields.get(h5_path)
+            note = ""
+            if idl and h5:
+                note = _note_shape(idl.shape, h5.shape)
+            mapping.append(
+                {
+                    "idl_field": idl_field,
+                    "h5_path": h5_path,
+                    "idl_shape": idl.shape if idl else None,
+                    "h5_shape": h5.shape if h5 else None,
+                    "idl_dtype": idl.dtype if idl else None,
+                    "h5_dtype": h5.dtype if h5 else None,
+                    "note": note,
+                }
+            )
 
-    h5_only = sorted(set(h5_fields.keys()) - set(mapping_table.values()))
+    h5_only = sorted(set(h5_fields.keys()) - set(mapped_h5_paths))
     idl_only = sorted(set(sav_fields.keys()) - set(mapping_table.keys()))
 
     report = {
