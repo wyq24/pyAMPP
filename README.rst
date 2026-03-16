@@ -46,11 +46,12 @@ pyAMPP can be installed directly from PyPI.
 
 We **strongly recommend** running **pyAMPP** in a dedicated Python 3.10 environment.
 You may use any of the following tools to install Python and create an isolated environment:
- - Miniforge: https://github.com/conda-forge/miniforge
- - Miniconda: https://www.anaconda.com/docs/getting-started/miniconda/install
- - Anaconda: https://www.anaconda.com/docs/getting-started/anaconda/install
- - Conda: https://docs.conda.io/projects/conda/en/latest/user-guide/install/index.html
- - pyenv: https://github.com/pyenv/pyenv?tab=readme-ov-file#installation
+
+- Miniforge: https://github.com/conda-forge/miniforge
+- Miniconda: https://www.anaconda.com/docs/getting-started/miniconda/install
+- Anaconda: https://www.anaconda.com/docs/getting-started/anaconda/install
+- Conda: https://docs.conda.io/projects/conda/en/latest/user-guide/install/index.html
+- pyenv: https://github.com/pyenv/pyenv?tab=readme-ov-file#installation
 
 Please refer to the official installation instructions for your chosen tool. Their documentation is comprehensive and up to date, so we will not repeat it here.
 
