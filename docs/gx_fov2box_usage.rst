@@ -211,6 +211,11 @@ Practical parity note:
   stage, IDL and pyAMPP should use the same NLFFF library/version.
 - Small WCS/header differences between fresh SunPy-native pyAMPP basemaps and
   IDL basemaps do not by themselves imply a scientific error.
+- Small coronal/chromospheric magnetic-cube differences may also occur even
+  when both workflows start from the same imported IDL entry box. This is an
+  expected implementation difference, not a hidden import bug:
+  - the IDL POT stage uses an FFT-based method
+  - the Python POT stage uses the extrapolation-library solver path
 - ``pyAMPP`` can reuse an existing source-data repository that was already
   populated by the IDL downloader. Point ``--data-dir`` at that shared cache
   when running parity checks to avoid unnecessary redownloads and to keep both

@@ -40,7 +40,7 @@ global_macros = [('NPY_NO_DEPRECATED_API', 'NPY_1_7_API_VERSION')]
 
 setup(
     name='pyampp',
-    version='1.0.0',
+    version='1.0.1',
     description='automatic model production pipeline (AMPP)',
     # long_description=get_description(),
     long_description='',

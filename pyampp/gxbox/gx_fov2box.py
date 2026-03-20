@@ -1420,37 +1420,56 @@ def _make_chromo_group(chromo_box: dict) -> dict:
     return group
 
 
-def _to_h5_2d(arr: np.ndarray, ny: int, nx: int) -> np.ndarray:
+def _to_h5_2d(arr: np.ndarray, ny: int, nx: int, source_axis_order_2d: str = "yx") -> np.ndarray:
     a = np.asarray(arr)
     if a.ndim != 2:
         return a
-    if a.shape == (ny, nx):
-        return a
-    if a.shape == (nx, ny):
-        return a.T
-    raise ValueError(f"Cannot normalize 2D map shape {a.shape} to (ny,nx)=({ny},{nx})")
+    axis_order = _decode_id_text(source_axis_order_2d).strip().lower()
+    if axis_order == "yx":
+        if a.shape == (ny, nx):
+            return a
+        if a.shape == (nx, ny):
+            return a.T
+        raise ValueError(
+            f"Cannot normalize 2D map shape {a.shape} from source order {source_axis_order_2d!r} "
+            f"to (ny,nx)=({ny},{nx})"
+        )
+    if axis_order == "xy":
+        if a.shape == (nx, ny) or (nx == ny and a.shape == (ny, nx)):
+            return a.T
+        raise ValueError(
+            f"Cannot normalize 2D map shape {a.shape} from source order {source_axis_order_2d!r} "
+            f"to (ny,nx)=({ny},{nx})"
+        )
+    raise ValueError(f"Unsupported 2D source axis order: {source_axis_order_2d!r}")
 
 
-def _to_h5_3d(arr: np.ndarray, ny: int, nx: int) -> np.ndarray:
+def _to_h5_3d(arr: np.ndarray, source_axis_order_3d: str) -> np.ndarray:
     """
-    Normalize internal cube to H5 canonical order (nz, ny, nx).
-    Accepts common permutations used by current pipeline.
+    Convert a 3D volume to canonical HDF5 order ``(z, y, x)``.
+
+    ``gx_fov2box`` currently uses explicit internal ``(x, y, z)`` volumes for
+    solver-facing paths, while HDF5 stores 3D volumes canonically as
+    ``(z, y, x)``. Do not infer the transform from the array shape because
+    cubic boxes make that ambiguous.
     """
     a = np.asarray(arr)
     if a.ndim != 3:
         return a
-    if a.shape[1:] == (ny, nx):  # already z,y,x
+    axis_order = _decode_id_text(source_axis_order_3d).strip().lower()
+    if axis_order == "zyx":
         return a
-    if a.shape[:2] == (ny, nx):  # y,x,z
-        return a.transpose((2, 0, 1))
-    if a.shape[:2] == (nx, ny):  # x,y,z
+    if axis_order == "xyz":
         return a.transpose((2, 1, 0))
-    if a.shape[1:] == (nx, ny):  # z,x,y
-        return a.transpose((0, 2, 1))
-    raise ValueError(f"Cannot normalize 3D cube shape {a.shape} to (nz,ny,nx) with (ny,nx)=({ny},{nx})")
+    raise ValueError(f"Unsupported 3D source axis order: {source_axis_order_3d!r}")
 
 
-def _normalize_stage_for_h5(stage_box: dict) -> dict:
+def _normalize_stage_for_h5(
+    stage_box: dict,
+    source_axis_order_3d: str = "xyz",
+    base_source_axis_order_2d: str = "yx",
+    chromo_source_axis_order_2d: str = "yx",
+) -> dict:
     out = dict(stage_box)
     if "base" not in out:
         return out
@@ -1465,31 +1484,31 @@ def _normalize_stage_for_h5(stage_box: dict) -> dict:
 
     for k in ("bx", "by", "bz", "ic", "chromo_mask"):
         if k in base:
-            base[k] = _to_h5_2d(base[k], ny, nx)
+            base[k] = _to_h5_2d(base[k], ny, nx, source_axis_order_2d=base_source_axis_order_2d)
     out["base"] = base
 
     if "corona" in out and isinstance(out["corona"], dict):
         corona = dict(out["corona"])
         for k in ("bx", "by", "bz"):
             if k in corona:
-                corona[k] = _to_h5_3d(corona[k], ny, nx)
+                corona[k] = _to_h5_3d(corona[k], source_axis_order_3d)
         out["corona"] = corona
 
     if "chromo" in out and isinstance(out["chromo"], dict):
         chromo = dict(out["chromo"])
         for k in ("bx", "by", "bz", "dz"):
             if k in chromo:
-                chromo[k] = _to_h5_3d(chromo[k], ny, nx)
+                chromo[k] = _to_h5_3d(chromo[k], source_axis_order_3d)
         for k in ("tr", "tr_h", "chromo_mask"):
             if k in chromo:
-                chromo[k] = _to_h5_2d(chromo[k], ny, nx)
+                chromo[k] = _to_h5_2d(chromo[k], ny, nx, source_axis_order_2d=chromo_source_axis_order_2d)
         out["chromo"] = chromo
 
     if "grid" in out and isinstance(out["grid"], dict):
         grid = dict(out["grid"])
         for k in ("voxel_id", "dz"):
             if k in grid and np.asarray(grid[k]).ndim == 3:
-                grid[k] = _to_h5_3d(grid[k], ny, nx)
+                grid[k] = _to_h5_3d(grid[k], source_axis_order_3d)
         out["grid"] = grid
     return out
 
@@ -1639,7 +1658,10 @@ def _load_entry_box_any(entry_path: Path) -> Dict[str, Any]:
               "CHROMO_LAYERS", "DZ", "CHROMO_MASK"):
         if k in names:
             kk = k.lower()
-            chromo[kk] = np.asarray(box[k])
+            if k == "DZ" and ny is not None and nx is not None:
+                chromo[kk] = _sav_cube_to_internal_xyz(np.asarray(box[k]), ny, nx)
+            else:
+                chromo[kk] = np.asarray(box[k])
     if "CHROMO_BCUBE" in names and ny is not None and nx is not None:
         cbc = np.asarray(box["CHROMO_BCUBE"])
         if cbc.ndim == 4 and cbc.shape[0] == 3:
@@ -1656,7 +1678,10 @@ def _load_entry_box_any(entry_path: Path) -> Dict[str, Any]:
         grid["dx"] = np.float64(dr[0])
         grid["dy"] = np.float64(dr[1])
     if "DZ" in names:
-        grid["dz"] = np.asarray(box["DZ"], dtype=np.float64)
+        if ny is not None and nx is not None:
+            grid["dz"] = _sav_cube_to_internal_xyz(np.asarray(box["DZ"], dtype=np.float64), ny, nx)
+        else:
+            grid["dz"] = np.asarray(box["DZ"], dtype=np.float64)
 
     voxel_id = None
     if "corona" in out and dr is not None and dr.size >= 3:
@@ -2004,7 +2029,10 @@ def main(
         clone_box["metadata"] = meta
         if observer_metadata is not None:
             clone_box["observer"] = observer_metadata
-        clone_box = _normalize_stage_for_h5(clone_box)
+        clone_source_axis_order_3d = "xyz" if entry_suffix == ".sav" else _decode_id_text(
+            meta.get("axis_order_3d", "zyx")
+        ).lower()
+        clone_box = _normalize_stage_for_h5(clone_box, source_axis_order_3d=clone_source_axis_order_3d)
         write_b3d_h5(str(out_path), clone_box)
         print("\nCompleted gx-fov2box clone-only. Output file:")
         print(f"- {out_path}")
@@ -2440,7 +2468,7 @@ def main(
         total = time_mod.perf_counter() - t_start
         print(f"Total elapsed: {total:.2f}s")
 
-    def save_stage(stage_tag: str, stage_box: dict) -> None:
+    def save_stage(stage_tag: str, stage_box: dict, chromo_source_axis_order_2d: str = "yx") -> None:
         if not _should_save_stage(stage_tag, cfg):
             return
         stage_box = dict(stage_box)
@@ -2494,7 +2522,11 @@ def main(
         )
         if merged_observer is not None:
             stage_box["observer"] = merged_observer
-        stage_box = _normalize_stage_for_h5(stage_box)
+        stage_box = _normalize_stage_for_h5(
+            stage_box,
+            source_axis_order_3d="xyz",
+            chromo_source_axis_order_2d=chromo_source_axis_order_2d,
+        )
         out_path = _stage_filename(out_dir, base, stage_tag)
         write_b3d_h5(str(out_path), stage_box)
         print(f"Saved {stage_tag}: {out_path}")
@@ -2778,7 +2810,7 @@ def main(
         chr_stage = {"corona": nlfff_box, "chromo": _make_chromo_group(chromo_box)}
         if lines is not None:
             chr_stage["lines"] = _make_lines_group(lines, dr3)
-        save_stage(chr_stage_tag, chr_stage)
+        save_stage(chr_stage_tag, chr_stage, chromo_source_axis_order_2d="xy")
         stage_times[chr_stage_tag] = progress.finish()
 
     finalize()

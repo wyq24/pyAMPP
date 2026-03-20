@@ -30,6 +30,34 @@ Unreleased
 - Added redundant derived ``observer/pb0r`` metadata alongside canonical
   ``observer/ephemeris`` for SSW-style ``B0 / L0 / Rsun`` interoperability.
 
+1.0.1
+-----
+
+Release focus:
+
+- SAV/HDF5 import parity fixes for CHR entry boxes,
+- corrected CHR magnetic-cube handling in the Python ``combo_model`` path,
+- documentation updates clarifying expected IDL-vs-Python POT-stage differences.
+
+Highlights:
+
+- Fixed CHR import from legacy SAV entry boxes so chromospheric 2D/3D payloads
+  preserve the intended axis ordering during SAV -> HDF5 -> pyAMPP round-trips.
+- Fixed Python CHR ``BCUBE`` generation to match the intended ``combo_model``
+  magnetic-cube contract, eliminating large differences caused by incorrect
+  axis ordering during the interpolation path.
+- Documented that small coronal/chromospheric magnetic-cube differences between
+  IDL and pyAMPP may still occur by design because the POT stage uses different
+  implementations:
+  - IDL uses an FFT-based method
+  - pyAMPP uses the Python extrapolation-library path
+- Removed raw SAV payload dumping from the normalized HDF5 conversion path by
+  default.
+
+Packaging/versioning:
+
+- Bumped package version to ``1.0.1`` in packaging metadata.
+
 1.0.0
 -----
 

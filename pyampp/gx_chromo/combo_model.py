@@ -31,10 +31,10 @@ def combo_model(box, dr, base_bz, base_ic, chromo_mask=None):
     chromo = populate_chromo(chromo_mask)
     csize = chromo['nh'].shape
     box_bcube = np.zeros((*msize, 3), dtype=np.float32)
-    # GX field cubes are (nx, ny, nz); only the vertical axis is reversed here.
-    box_bcube[:, :, :, 0] = bx[:, :, ::-1]
-    box_bcube[:, :, :, 1] = by[:, :, ::-1]
-    box_bcube[:, :, :, 2] = bz[:, :, ::-1]
+    # Match the IDL combo_model contract: interpolate the box field as stored.
+    box_bcube[:, :, :, 0] = bx
+    box_bcube[:, :, :, 1] = by
+    box_bcube[:, :, :, 2] = bz
 
     dz = np.ones(msize, dtype=np.float64) * dr[2]
     z = np.zeros(msize, dtype=np.float64)
