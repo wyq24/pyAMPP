@@ -2468,7 +2468,13 @@ def main(
         total = time_mod.perf_counter() - t_start
         print(f"Total elapsed: {total:.2f}s")
 
-    def save_stage(stage_tag: str, stage_box: dict, chromo_source_axis_order_2d: str = "yx") -> None:
+    def save_stage(
+        stage_tag: str,
+        stage_box: dict,
+        *,
+        source_axis_order_3d: str = "xyz",
+        chromo_source_axis_order_2d: str = "yx",
+    ) -> None:
         if not _should_save_stage(stage_tag, cfg):
             return
         stage_box = dict(stage_box)
@@ -2480,8 +2486,11 @@ def main(
             corona = stage_box["corona"]
             if "dr" not in corona:
                 corona["dr"] = dr3
+            corona_for_id = corona
+            if _decode_id_text(source_axis_order_3d).strip().lower() == "zyx":
+                corona_for_id = _h5_corona_to_internal_xyz(dict(corona), "zyx")
             voxel_id, corona_base = gx_box2id(
-                {"corona": corona, "lines": stage_box.get("lines"), "chromo": stage_box.get("chromo")},
+                {"corona": corona_for_id, "lines": stage_box.get("lines"), "chromo": stage_box.get("chromo")},
                 return_corona_base=True,
             )
             if corona_base is not None:
@@ -2524,7 +2533,7 @@ def main(
             stage_box["observer"] = merged_observer
         stage_box = _normalize_stage_for_h5(
             stage_box,
-            source_axis_order_3d="xyz",
+            source_axis_order_3d=source_axis_order_3d,
             chromo_source_axis_order_2d=chromo_source_axis_order_2d,
         )
         out_path = _stage_filename(out_dir, base, stage_tag)
@@ -2552,7 +2561,7 @@ def main(
                     "attrs": {"model_type": "none"},
                 }
             }
-            save_stage("NONE", stage_box)
+            save_stage("NONE", stage_box, source_axis_order_3d="zyx")
             stage_times["NONE"] = progress.finish()
         if cfg.empty_box_only or _last_stage_tag(cfg.stop_after) == "NONE":
             finalize()
