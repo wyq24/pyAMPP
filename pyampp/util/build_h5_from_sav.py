@@ -447,8 +447,6 @@ def build_h5_from_sav(sav_path: Path, out_h5: Path, template_h5: Path | None = N
             _replace_dataset(map_group, "wcs_header", np.bytes_(map_header))
             map_group.attrs["order_index"] = np.int64(order_index)
 
-        _write_raw_sav_dump(f, box=box, base=base, index=index)
-
     return out_h5
 
 

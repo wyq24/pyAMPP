@@ -1,8 +1,9 @@
 import sys
 import os
-import select
+import queue
 import re
 import shlex
+import threading
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QPushButton, QComboBox,
                              QRadioButton,
                              QCheckBox, QGridLayout, QGroupBox, QButtonGroup, QVBoxLayout, QHBoxLayout, QDateTimeEdit,
@@ -44,6 +45,14 @@ import subprocess
 app = typer.Typer(help="Launch the PyAmpp application.")
 
 base_dir = Path(pyampp.__file__).parent
+
+
+def _split_process_output_text(partial_line: str, text: str) -> tuple[list[str], str]:
+    merged = partial_line + text.replace("\r\n", "\n").replace("\r", "\n")
+    if merged.endswith("\n"):
+        return merged.split("\n")[:-1], ""
+    parts = merged.split("\n")
+    return parts[:-1], parts[-1]
 
 
 class CustomQLineEdit(QLineEdit):
@@ -132,6 +141,8 @@ class PyAmppGUI(QMainWindow):
         self._view3d_proc = None
         self._view3d_target_path = None
         self._view3d_launch_pending = False
+        self._proc_output_queue: queue.SimpleQueue[str | None] = queue.SimpleQueue()
+        self._proc_reader_thread = None
         self._proc_partial_line = ""
         self._proc_command = None
         self._pending_stop_after = None
@@ -2052,9 +2063,15 @@ class PyAmppGUI(QMainWindow):
                 bufsize=1,
                 env={**os.environ, "PYTHONUNBUFFERED": "1"},
             )
+            self._proc_output_queue = queue.SimpleQueue()
             self._proc_partial_line = ""
             if self._gxbox_proc.stdout is not None:
-                os.set_blocking(self._gxbox_proc.stdout.fileno(), False)
+                self._proc_reader_thread = threading.Thread(
+                    target=self._read_process_output,
+                    args=(self._gxbox_proc.stdout, self._proc_output_queue),
+                    daemon=True,
+                )
+                self._proc_reader_thread.start()
             self.execute_button.setEnabled(False)
             self.stop_button.setEnabled(True)
             self.status_log_edit.append("Command started: " + " ".join(command))
@@ -2064,6 +2081,20 @@ class PyAmppGUI(QMainWindow):
             self._pending_stop_after = None
             QMessageBox.critical(self, "Execution Error", f"Failed to start command: {e}")
             self.status_log_edit.append("Command failed to start")
+
+    @staticmethod
+    def _read_process_output(stream, output_queue: queue.SimpleQueue[str | None]) -> None:
+        try:
+            for line in iter(stream.readline, ""):
+                output_queue.put(line)
+        except Exception as exc:
+            output_queue.put(f"\nGUI process-reader error: {exc}\n")
+        finally:
+            try:
+                stream.close()
+            except Exception:
+                pass
+            output_queue.put(None)
 
     @staticmethod
     def _command_stop_after(command) -> str | None:
@@ -2097,29 +2128,23 @@ class PyAmppGUI(QMainWindow):
             self.status_log_edit.append(f"FOV/box selector error: {exc}")
 
     def _drain_process_output(self):
-        if self._gxbox_proc is None or self._gxbox_proc.stdout is None:
+        if self._gxbox_proc is None:
             return
-        stdout = self._gxbox_proc.stdout
-        fd = stdout.fileno()
         chunks = []
         while True:
-            ready, _, _ = select.select([fd], [], [], 0)
-            if not ready:
+            try:
+                chunk = self._proc_output_queue.get_nowait()
+            except queue.Empty:
                 break
-            chunk = stdout.read()
-            if not chunk:
-                break
+            if chunk is None:
+                continue
             chunks.append(chunk)
         if not chunks:
             return
-        text = self._proc_partial_line + "".join(chunks).replace("\r\n", "\n").replace("\r", "\n")
-        if text.endswith("\n"):
-            complete_lines = text.split("\n")[:-1]
-            self._proc_partial_line = ""
-        else:
-            parts = text.split("\n")
-            complete_lines = parts[:-1]
-            self._proc_partial_line = parts[-1]
+        complete_lines, self._proc_partial_line = _split_process_output_text(
+            self._proc_partial_line,
+            "".join(chunks),
+        )
         for line in complete_lines:
             if line.strip():
                 self.status_log_edit.append(line)
@@ -2185,6 +2210,7 @@ class PyAmppGUI(QMainWindow):
         finally:
             if self._gxbox_proc is not None and self._gxbox_proc.poll() is not None:
                 self._gxbox_proc = None
+                self._proc_reader_thread = None
                 self._proc_command = None
                 self._pending_stop_after = None
                 self.stop_button.setEnabled(False)

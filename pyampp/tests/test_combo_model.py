@@ -25,9 +25,9 @@ def test_combo_model_accepts_3d_field_cubes():
     )
 
     assert chromo_box["bcube"].shape == (nx, ny, nz, 3)
-    np.testing.assert_allclose(chromo_box["bcube"][:, :, :, 0], box["bx"][:, :, ::-1])
-    np.testing.assert_allclose(chromo_box["bcube"][:, :, :, 1], box["by"][:, :, ::-1])
-    np.testing.assert_allclose(chromo_box["bcube"][:, :, :, 2], box["bz"][:, :, ::-1])
+    np.testing.assert_allclose(chromo_box["bcube"][:, :, :, 0], box["bx"])
+    np.testing.assert_allclose(chromo_box["bcube"][:, :, :, 1], box["by"])
+    np.testing.assert_allclose(chromo_box["bcube"][:, :, :, 2], box["bz"])
 
 
 def test_combo_model_uses_supplied_chromo_mask(monkeypatch):

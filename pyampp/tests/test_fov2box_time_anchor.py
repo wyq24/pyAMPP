@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import astropy.units as u
+import h5py
 import numpy as np
 from astropy.io import fits
 from astropy.time import Time
@@ -11,6 +12,7 @@ from astropy.time import Time
 from pyampp.gxbox import gx_fov2box
 from pyampp.gxbox.boxutils import load_sunpy_map_compat, read_b3d_h5, write_b3d_h5
 from pyampp.util.config import IDL_HMI_RSUN_M
+from pyampp.util.build_h5_from_sav import build_h5_from_sav
 
 
 class _FakeMap:
@@ -342,6 +344,63 @@ def _fake_sav_box_with_base_and_index():
     return box
 
 
+def _fake_sav_box_with_cubic_corona_and_chromo():
+    base = np.empty(
+        1,
+        dtype=[
+            ("BX", np.float64, (2, 2)),
+            ("BY", np.float64, (2, 2)),
+            ("BZ", np.float64, (2, 2)),
+            ("IC", np.float64, (2, 2)),
+        ],
+    )
+    base["BX"][0] = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64)
+    base["BY"][0] = np.array([[11.0, 12.0], [13.0, 14.0]], dtype=np.float64)
+    base["BZ"][0] = np.array([[21.0, 22.0], [23.0, 24.0]], dtype=np.float64)
+    base["IC"][0] = np.ones((2, 2), dtype=np.float64)
+
+    # IDL [x,y,z] restored by readsav as numpy [z,y,x].
+    bx_zyx = np.arange(8, dtype=np.float32).reshape(2, 2, 2) + 100.0
+    by_zyx = np.arange(8, dtype=np.float32).reshape(2, 2, 2) + 200.0
+    bz_zyx = np.arange(8, dtype=np.float32).reshape(2, 2, 2) + 300.0
+    chromo_bcube = np.stack([bx_zyx + 1000.0, by_zyx + 1000.0, bz_zyx + 1000.0], axis=0)
+
+    box = np.empty(
+        1,
+        dtype=[
+            ("BASE", object),
+            ("BX", object),
+            ("BY", object),
+            ("BZ", object),
+            ("DR", object),
+            ("CORONA_BASE", np.int16),
+            ("CHROMO_IDX", object),
+            ("CHROMO_T", object),
+            ("CHROMO_N", object),
+            ("CHROMO_BCUBE", object),
+            ("CHROMO_LAYERS", np.int16),
+            ("DZ", object),
+            ("ID", object),
+            ("EXECUTE", object),
+        ],
+    )
+    box["BASE"][0] = base
+    box["BX"][0] = bx_zyx
+    box["BY"][0] = by_zyx
+    box["BZ"][0] = bz_zyx
+    box["DR"][0] = np.array([0.1, 0.1, 0.2], dtype=np.float64)
+    box["CORONA_BASE"][0] = 1
+    box["CHROMO_IDX"][0] = np.array([0, 1, 2, 3], dtype=np.int64)
+    box["CHROMO_T"][0] = np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32)
+    box["CHROMO_N"][0] = np.array([2.0, 2.0, 2.0, 2.0], dtype=np.float32)
+    box["CHROMO_BCUBE"][0] = chromo_bcube
+    box["CHROMO_LAYERS"][0] = 1
+    box["DZ"][0] = np.arange(8, dtype=np.float64).reshape(2, 2, 2) + 500.0
+    box["ID"][0] = b"hmi.M_720s.20251126_153431.W28S12CR.CEA.NAS.CHR"
+    box["EXECUTE"][0] = b"gx_fov2box, '26-Nov-25 15:47:52'"
+    return box
+
+
 def test_load_entry_box_any_restores_sav_refmaps(tmp_path):
     fake_box = _fake_sav_box_with_refmaps()
     with patch.object(gx_fov2box, "readsav", return_value={"box": fake_box}):
@@ -382,3 +441,58 @@ def test_load_entry_box_any_serializes_sav_index_as_fits_header(tmp_path):
     roundtrip_header = fits.Header.fromstring(roundtrip["base"]["index"], sep="\n")
     assert roundtrip_header["CTYPE1"] == "CRLN-CEA"
     assert roundtrip_header["CRLN_OBS"] == 44.9246506781
+
+
+def test_sav_entry_box_roundtrip_preserves_cubic_3d_axis_order(tmp_path):
+    fake_box = _fake_sav_box_with_cubic_corona_and_chromo()
+    with patch.object(gx_fov2box, "readsav", return_value={"box": fake_box}):
+        loaded = gx_fov2box._load_entry_box_any(tmp_path / "entry.sav")
+
+    out_h5 = tmp_path / "entry.h5"
+    normalized = gx_fov2box._normalize_stage_for_h5(loaded, source_axis_order_3d="xyz")
+    write_b3d_h5(str(out_h5), normalized)
+    roundtrip = read_b3d_h5(str(out_h5))
+
+    assert np.array_equal(roundtrip["corona"]["bx"], fake_box["BX"][0])
+    assert np.array_equal(roundtrip["corona"]["by"], fake_box["BY"][0])
+    assert np.array_equal(roundtrip["corona"]["bz"], fake_box["BZ"][0])
+    assert np.array_equal(roundtrip["chromo"]["bx"], fake_box["CHROMO_BCUBE"][0][0])
+    assert np.array_equal(roundtrip["chromo"]["by"], fake_box["CHROMO_BCUBE"][0][1])
+    assert np.array_equal(roundtrip["chromo"]["bz"], fake_box["CHROMO_BCUBE"][0][2])
+    assert np.array_equal(roundtrip["chromo"]["dz"], fake_box["DZ"][0])
+
+
+def test_normalize_stage_for_h5_transposes_chr_2d_maps_from_xy_to_yx():
+    stage_box = {
+        "base": {
+            "bx": np.arange(6, dtype=np.float32).reshape(2, 3),
+            "by": np.arange(6, dtype=np.float32).reshape(2, 3),
+            "bz": np.arange(6, dtype=np.float32).reshape(2, 3),
+        },
+        "chromo": {
+            "tr": np.array([[10, 11], [12, 13], [14, 15]], dtype=np.int64),
+            "tr_h": np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32),
+            "chromo_mask": np.array([[1, 2], [3, 4], [5, 6]], dtype=np.int16),
+        },
+    }
+
+    normalized = gx_fov2box._normalize_stage_for_h5(
+        stage_box,
+        source_axis_order_3d="xyz",
+        chromo_source_axis_order_2d="xy",
+    )
+
+    assert np.array_equal(normalized["chromo"]["tr"], stage_box["chromo"]["tr"].T)
+    assert np.array_equal(normalized["chromo"]["tr_h"], stage_box["chromo"]["tr_h"].T)
+    assert np.array_equal(normalized["chromo"]["chromo_mask"], stage_box["chromo"]["chromo_mask"].T)
+
+
+def test_build_h5_from_sav_does_not_write_raw_sav_by_default(tmp_path):
+    fake_box = _fake_sav_box_with_base_and_index()
+    out_h5 = tmp_path / "entry.h5"
+
+    with patch("pyampp.util.build_h5_from_sav.readsav", return_value={"box": fake_box}):
+        build_h5_from_sav(tmp_path / "entry.sav", out_h5)
+
+    with h5py.File(out_h5, "r") as f:
+        assert "raw_sav" not in f
