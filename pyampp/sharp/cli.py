@@ -59,6 +59,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--nz", required=True, type=int, help="Vertical depth of the model box in voxels")
+    parser.add_argument(
+        "--line-nproc",
+        type=int,
+        default=0,
+        help="Line-tracing process count. Use 0 for the native default/auto behavior.",
+    )
     parser.add_argument("--mw-lib", required=True, help="Path to the microwave synthesis shared library")
     parser.add_argument("--ebtel", required=True, help="Path to the EBTEL .sav file")
     parser.add_argument("--radio-config", required=True, help="Path to the radio YAML config file")
@@ -165,6 +171,7 @@ def _run_gx_pipeline(
     gxmodel_dir: Path,
     observer_name: str = "sdo",
     use_potential: bool = False,
+    line_nproc: int = 0,
 ) -> None:
     from pyampp.gxbox import gx_fov2box
 
@@ -200,6 +207,7 @@ def _run_gx_pipeline(
         skip_lines=False,
         center_vox=False,
         reduce_passed=None,
+        line_nproc=int(line_nproc),
         euv=False,
         uv=False,
         sfq=False,
@@ -275,6 +283,7 @@ def _process_record(
         t_rec=entry_result.t_rec,
         gxmodel_dir=model_dir,
         use_potential=bool(args.use_potential),
+        line_nproc=int(args.line_nproc),
     )
     chr_path = _final_chr_path(model_dir, entry_result.base_id, entry_result.t_rec)
 

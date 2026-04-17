@@ -97,6 +97,7 @@ class Fov2BoxConfig:
     skip_lines: bool
     center_vox: bool
     reduce_passed: Optional[int]
+    line_nproc: int
     euv: bool
     uv: bool
     sfq: bool
@@ -1803,6 +1804,12 @@ def main(
         max=3,
         help="Expert line tracing reduction bitmask: 0|1|2|3 (overrides --center-vox)",
     ),
+    line_nproc: int = typer.Option(
+        0,
+        "--line-nproc",
+        min=0,
+        help="Line-tracing process count. Use 0 for the native default/auto behavior.",
+    ),
     euv: bool = typer.Option(False, "--euv", help="Download AIA EUV maps"),
     uv: bool = typer.Option(False, "--uv", help="Download AIA UV maps"),
     sfq: bool = typer.Option(False, "--sfq", help="Use SFQ disambiguation (method=0)"),
@@ -1853,6 +1860,7 @@ def main(
         skip_lines=skip_lines,
         center_vox=center_vox,
         reduce_passed=reduce_passed,
+        line_nproc=line_nproc,
         euv=euv,
         uv=uv,
         sfq=sfq,
@@ -2777,6 +2785,7 @@ def main(
                 "seeds": None,
                 "chromo_level": resolved_chromo_level,
                 "reduce_passed": resolved_reduce_passed,
+                "n_processes": cfg.line_nproc,
             }
             gen_trace_t0 = time_mod.perf_counter()
             lines = _lines_fast(maglib, **trace_kwargs)
