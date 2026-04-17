@@ -1,0 +1,6 @@
+tbase: 10000.0
+nbase: 10000000000.0
+q0: 1.0
+a: 1.0
+b: 1.0
+force_isothermal: 1

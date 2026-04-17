@@ -513,13 +513,23 @@ def load_sunpy_map_compat(path_or_data, header=None):
         return _normalize_loaded_map_rsun(Map(path_or_data))
     except Exception as exc:
         msg = str(exc)
-        if ("did not parse as unit" not in msg) and ("not a valid unit" not in msg):
+        if (
+            ("did not parse as unit" not in msg)
+            and ("not a valid unit" not in msg)
+            and ("Image coordinate units for axis" not in msg)
+        ):
             raise
 
         with fits.open(path_or_data) as hdul:
             image_hdu = _first_image_hdu(hdul)
             data = image_hdu.data
             safe_header = image_hdu.header.copy()
+        ctype1 = str(safe_header.get("CTYPE1", "")).upper()
+        ctype2 = str(safe_header.get("CTYPE2", "")).upper()
+        if safe_header.get("CUNIT1") in (None, "") and ("CEA" in ctype1 or "CRLN" in ctype1):
+            safe_header["CUNIT1"] = "deg"
+        if safe_header.get("CUNIT2") in (None, "") and ("CEA" in ctype2 or "CRLT" in ctype2):
+            safe_header["CUNIT2"] = "deg"
         return map_from_data_header_compat(data, safe_header)
 
 

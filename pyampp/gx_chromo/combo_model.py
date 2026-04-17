@@ -4,6 +4,8 @@ import pdb
 from .decompose import decompose
 from .populate_chromo import populate_chromo
 
+_VALID_CHROMO_MASK_VALUES = np.array((1, 2, 3, 4, 5, 6, 7, 10), dtype=np.int32)
+
 def combo_model_idl(bndbox, box):
     base_bz = bndbox["base"][0]["bz"][0].T
     base_ic = bndbox["base"][0]["ic"][0].T
@@ -22,11 +24,18 @@ def combo_model(box, dr, base_bz, base_ic, chromo_mask=None):
 
     if chromo_mask is None:
         chromo_mask = decompose(base_bz, base_ic)
+    else:
+        chromo_mask = np.asarray(chromo_mask, dtype=np.int32)
 
     if chromo_mask.shape != msize[:2]:
         raise ValueError(
             f"chromo_mask shape {chromo_mask.shape} does not match box xy shape {msize[:2]}"
         )
+
+    invalid = ~np.isin(chromo_mask, _VALID_CHROMO_MASK_VALUES)
+    if np.any(invalid):
+        chromo_mask = chromo_mask.copy()
+        chromo_mask[invalid] = 1
 
     chromo = populate_chromo(chromo_mask)
     csize = chromo['nh'].shape

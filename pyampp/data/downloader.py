@@ -5,6 +5,7 @@ import re
 import shutil
 import tempfile
 from datetime import datetime, timedelta
+from functools import lru_cache
 from glob import glob
 from pathlib import Path
 from typing import Optional
@@ -14,9 +15,15 @@ import astropy.units as u
 from astropy.io import fits
 from astropy.time import Time
 import numpy as np
-from sunpy.net import Fido, attrs as a
 
 from pyampp.util.config import *
+
+
+@lru_cache(maxsize=1)
+def _get_sunpy_net():
+    from sunpy.net import Fido, attrs as a
+
+    return Fido, a
 
 
 class SDOImageDownloader:
@@ -226,6 +233,7 @@ class SDOImageDownloader:
         return self._check_files_exist(self.path, returnfilelist=True)
 
     def _handle_euv(self, all_files):
+        _, a = _get_sunpy_net()
         if self.force_download:
             missing_euv = AIA_EUV_PASSBANDS
         elif self.existence_report:
@@ -243,6 +251,7 @@ class SDOImageDownloader:
             )
 
     def _handle_uv(self, all_files):
+        _, a = _get_sunpy_net()
         if self.force_download:
             missing_uv = AIA_UV_PASSBANDS
         elif self.existence_report:
@@ -260,6 +269,7 @@ class SDOImageDownloader:
             )
 
     def _handle_hmi(self, all_files):
+        _, a = _get_sunpy_net()
         if self.force_download:
             missing_hmi_b = HMI_B_SEGMENTS
             missing_hmi_m = True
@@ -282,6 +292,7 @@ class SDOImageDownloader:
             all_files["hmi_ic"] = self._search("hmi.Ic_noLimbDark_720s", segments=a.jsoc.Segment("continuum"))
 
     def _search(self, series, segments=None, wavelength=None):
+        Fido, a = _get_sunpy_net()
         notify_email = jsoc_notify_email()
         search_attrs = [a.Time(self.time, self.time), a.jsoc.Series(series), a.jsoc.Notify(notify_email)]
         if wavelength:
@@ -295,6 +306,7 @@ class SDOImageDownloader:
         return result
 
     def _fetch(self, files_to_download, streams=5, overwrite=False):
+        Fido, _ = _get_sunpy_net()
         fetched_files = Fido.fetch(*files_to_download, path=self.path, overwrite=overwrite, max_conn=streams)
         print(f"Downloaded {len(fetched_files)} files.")
         return fetched_files

@@ -96,4 +96,9 @@ def decompose(mag, cont):
     if n_facula != 0:
         model_mask[sub] = 5
 
+    # Some remapped patches leave a small number of pixels outside the explicit
+    # intensity bins above. The chromosphere builder does not support an
+    # unclassified state, so treat those residual pixels as quiet-Sun IN.
+    model_mask[model_mask == 0] = 1
+
     return model_mask

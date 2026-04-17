@@ -9,6 +9,7 @@ This is the documentation for pyAMPP.
 
    model_hdf5_format
    gx_fov2box_usage
+   sharp_cli_status
    gui_workflow
    viewers
    changelog
